@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 /**
  * Configuration for the Argus feature flag SDK.

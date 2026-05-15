@@ -13,5 +13,5 @@ dependencyResolution {
     }
 }
 
-rootProject.name = "telus-smarthome-argus-android-sdk"
+rootProject.name = "argus-android-sdk"
 include(":argus-sdk")

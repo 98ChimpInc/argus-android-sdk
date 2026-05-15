@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.telus.argus"
+    namespace = "cloud.projectargus"
     compileSdk = 34
 
     defaultConfig {

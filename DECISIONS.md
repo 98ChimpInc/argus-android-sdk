@@ -2,7 +2,7 @@
 
 ## 2026-04-03 — Standalone copies of interface, enum, and data models
 
-**Decision**: Include standalone copies of `FeatureFlagService`, `FeatureFlag`, and all `FeatureFlagData` model classes within the SDK's `com.telus.argus` package.
+**Decision**: Include standalone copies of `FeatureFlagService`, `FeatureFlag`, and all `FeatureFlagData` model classes within the SDK's `cloud.projectargus` package.
 
 **Reason**: The SDK must compile independently as a standalone Gradle module. In the real app integration, the app's own versions from `:core:featureflag` are used via dependency injection. The standalone copies allow the SDK to be developed, tested, and versioned independently.
 
@@ -10,7 +10,7 @@
 
 ## 2026-04-03 — compareVersion utility inlined in the service
 
-**Decision**: Inline a `compareVersion` private method in `ArgusFeatureFlagServiceImpl` rather than importing `com.telus.smarthome.core.utility.compareVersion`.
+**Decision**: Inline a `compareVersion` private method in `ArgusFeatureFlagServiceImpl` rather than importing the host app's `compareVersion` utility.
 
 **Reason**: The SDK is standalone and does not depend on the host app's `:core:utility` module. Inlining the simple version comparison avoids an additional module dependency. The logic is straightforward (split on `.`, compare integer parts).
 
@@ -28,7 +28,7 @@
 
 **Decision**: Use OkHttp for HTTP calls, consistent with the host app's existing HTTP stack.
 
-**Reason**: The spec explicitly states OkHttp. The SmartHome+ Android app already depends on OkHttp, so it adds no new transitive dependency in the integrated build.
+**Reason**: The spec explicitly states OkHttp. A typical host Android app already depends on OkHttp, so it adds no new transitive dependency in the integrated build.
 
 **Alternatives considered**: `HttpURLConnection` for zero-dependency builds. Rejected per spec.
 

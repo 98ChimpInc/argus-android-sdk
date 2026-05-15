@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import com.google.firebase.auth.FirebaseAuth
 import com.squareup.moshi.Moshi

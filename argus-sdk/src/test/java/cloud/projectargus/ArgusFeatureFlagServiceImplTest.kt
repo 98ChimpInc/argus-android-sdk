@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -36,7 +36,7 @@ class ArgusFeatureFlagServiceImplTest {
 
         val configuration = ArgusConfiguration(
             baseURL = "https://example.com",
-            tenantId = "telus_ca",
+            tenantId = "acme_corp",
             environment = "prod",
             userId = "test-user-123"
         )

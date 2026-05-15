@@ -1,6 +1,6 @@
 # Argus Android SDK
 
-Drop-in replacement for the Firebase Remote Config-backed `FeatureFlagServiceImpl` in the SmartHome+ Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
+Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl` in an Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
 
 ## Architecture
 
@@ -11,7 +11,7 @@ The SDK implements the `FeatureFlagService` interface. Every `@Inject FeatureFla
 - **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Fetches flags from the Argus endpoint, caches them in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
 - **`ArgusConfiguration`** ... data class holding the endpoint URL, tenant ID, environment, and user ID.
 - **`FNV1a`** ... FNV-1a 32-bit hash for rollout bucketing. Produces identical output to the JavaScript reference in the Argus backend.
-- **`ArgusModule`** ... optional standalone Hilt module for use outside the SmartHome+ app.
+- **`ArgusModule`** ... optional standalone Hilt module for use when the SDK is not wired through the host app's own Hilt graph.
 
 ### Design Principles
 
@@ -28,7 +28,7 @@ In the host app's `settings.gradle.kts`:
 
 ```kotlin
 include(":argus-sdk")
-project(":argus-sdk").projectDir = file("../telus-smarthome-argus-android-sdk/argus-sdk")
+project(":argus-sdk").projectDir = file("../argus-android-sdk/argus-sdk")
 ```
 
 In the host app's `app/build.gradle.kts`:
