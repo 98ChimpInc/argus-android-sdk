@@ -13,7 +13,7 @@ enum class FeatureFlag(
     val groupTag: String = GROUP_DEFAULT,
     val defaultValue: Any? = null
 ) {
-    ENABLE_SWEEPR("enable_sweepr", defaultValue = false),
+    ENABLE_SUPPORT_CHAT("enable_support_chat", defaultValue = false),
     ENABLE_OAUTH2_LOGIN("enable_oauth2_login", defaultValue = false),
     TWH_SUPPORTED("twh_supported"),
     ENABLE_NETWORK_GUEST_WIFI("enable_network_guest_wifi"),

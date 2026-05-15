@@ -265,7 +265,7 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
     override fun isTwhSupported() = getBoolean(FeatureFlag.TWH_SUPPORTED.key)
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
-    override fun isSweeprEnabled() = getBoolean(FeatureFlag.ENABLE_SWEEPR.key)
+    override fun isSupportChatEnabled() = getBoolean(FeatureFlag.ENABLE_SUPPORT_CHAT.key)
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
     override fun isSupportEnabled() = getBoolean(FeatureFlag.ENABLE_SUPPORT.key)

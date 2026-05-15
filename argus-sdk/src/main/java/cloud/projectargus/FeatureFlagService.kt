@@ -39,7 +39,7 @@ interface FeatureFlagService {
     fun isTwhSupported(): Boolean
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
-    fun isSweeprEnabled(): Boolean
+    fun isSupportChatEnabled(): Boolean
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
     fun isSupportEnabled(): Boolean
