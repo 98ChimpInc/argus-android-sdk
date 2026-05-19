@@ -9,7 +9,7 @@ The SDK implements the `FeatureFlagService` interface. Every `@Inject FeatureFla
 ### Key Components
 
 - **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Fetches flags from the Argus endpoint, caches them in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
-- **`ArgusConfiguration`** ... data class holding the endpoint URL, tenant ID, environment, and user ID.
+- **`ArgusConfiguration`** ... data class holding the API key, endpoint URL, tenant ID, environment, and user ID.
 - **`FNV1a`** ... FNV-1a 32-bit hash for rollout bucketing. Produces identical output to the JavaScript reference in the Argus backend.
 - **`ArgusModule`** ... optional standalone Hilt module for use when the SDK is not wired through the host app's own Hilt graph.
 
@@ -51,9 +51,10 @@ The `ARGUS_ENABLED` feature flag (read from Firebase Remote Config) controls whi
 
 | Dependency | Reason |
 |---|---|
-| `firebase-auth-ktx` | Obtain ID token for Argus endpoint auth |
 | `hilt-android` | `@Inject` / `@Singleton` annotations |
 | `moshi` + `moshi-kotlin` | JSON deserialisation matching existing app pattern |
 | `okhttp` | HTTP client matching existing app pattern |
-| `kotlinx-coroutines-*` | Async fetch, `StateFlow`, `await()` on Tasks |
+| `kotlinx-coroutines-*` | Async fetch and `StateFlow` |
 | `timber` | Logging matching existing app pattern |
+
+The SDK authenticates with an Argus API key (`ArgusConfiguration.apiKey`) ... no Firebase dependency.
