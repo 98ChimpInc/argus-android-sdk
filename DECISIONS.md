@@ -1,5 +1,22 @@
 # Decisions Log
 
+## 2026-05-18 — API-key auth, dropping the Firebase Auth dependency
+
+**Decision**: Authenticate to the Argus `resolveFlags` endpoint with a per-Customer
+API key (`ArgusConfiguration.apiKey`, sent as `Authorization: Bearer <apiKey>`)
+instead of a Firebase Auth ID token.
+
+**Reason**: The `resolveFlags` endpoint became API-key-only (argus-web-app #15) — it
+matches the bearer token against a Customer `apiKey`. The SDK was still sending a
+Firebase Auth ID token, which never matches an apiKey, so every request 401'd.
+API-key auth also removes the Firebase Auth SDK (and `coroutines-play-services`)
+dependency entirely. Fixed the request path at the same time (`/api/flags` was
+wrong; the endpoint is `/resolveFlags`).
+
+**Alternatives considered**: Keeping Firebase Auth and adding apiKey-token support
+server-side. Rejected — the endpoint is intentionally apiKey-only so SDK consumers
+need no Firebase project of their own.
+
 ## 2026-04-03 — Standalone copies of interface, enum, and data models
 
 **Decision**: Include standalone copies of `FeatureFlagService`, `FeatureFlag`, and all `FeatureFlagData` model classes within the SDK's `cloud.projectargus` package.
