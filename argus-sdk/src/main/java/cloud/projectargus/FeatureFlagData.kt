@@ -1,11 +1,11 @@
-package com.telus.argus
+package cloud.projectargus
 
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
 
 /**
- * Standalone copies of the feature flag data models from the SmartHome+ Android app.
- * These are included in the SDK so it can compile independently. In the real app
+ * Standalone copies of a host app's feature flag data models.
+ * These are included in the SDK so it can compile independently. In a real app
  * integration, the app's own versions are used via dependency injection.
  */
 
@@ -103,8 +103,8 @@ data class DeviceTypeConfig(
     val internetNetworkDevices: DeviceList,
     @Json(name = "internetEndUserDevices")
     val internetEndUserDevices: DeviceList,
-    @Json(name = "smartHomeEndUserDevices")
-    val smartHomeEndUserDevices: DeviceList
+    @Json(name = "managedEndUserDevices")
+    val managedEndUserDevices: DeviceList
 ) : FeatureFlagData
 
 @JsonClass(generateAdapter = true)

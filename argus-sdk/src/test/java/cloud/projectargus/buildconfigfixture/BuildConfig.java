@@ -1,4 +1,4 @@
-package com.telus.argus.buildconfigfixture;
+package cloud.projectargus.buildconfigfixture;
 
 /**
  * Hand-rolled stand-in for a host-app-generated BuildConfig class. In a real

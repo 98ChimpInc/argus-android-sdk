@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 /**
  * Constants used by the feature flag service implementations.

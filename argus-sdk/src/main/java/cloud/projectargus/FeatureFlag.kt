@@ -1,10 +1,10 @@
-package com.telus.argus
+package cloud.projectargus
 
 import kotlin.reflect.KClass
 
 /**
- * Standalone copy of the FeatureFlag enum from the SmartHome+ Android app.
- * This is included in the SDK so it can compile independently. In the real app
+ * Standalone copy of a host app's FeatureFlag enum.
+ * This is included in the SDK so it can compile independently. In a real app
  * integration, the app's own version is used via dependency injection.
  */
 enum class FeatureFlag(
@@ -13,7 +13,7 @@ enum class FeatureFlag(
     val groupTag: String = GROUP_DEFAULT,
     val defaultValue: Any? = null
 ) {
-    ENABLE_SWEEPR("enable_sweepr", defaultValue = false),
+    ENABLE_SUPPORT_CHAT("enable_support_chat", defaultValue = false),
     ENABLE_OAUTH2_LOGIN("enable_oauth2_login", defaultValue = false),
     TWH_SUPPORTED("twh_supported"),
     ENABLE_NETWORK_GUEST_WIFI("enable_network_guest_wifi"),
@@ -31,7 +31,7 @@ enum class FeatureFlag(
     ENABLE_ZWAVE_COLOUR_CONTROL("enable_zwave_colour_control"),
     ENABLE_CHECK_FOR_DEVICE_COMMANDS("enable_check_for_device_commands"),
     ENABLE_DISCOVER_TAB("enable_services_discover_marketing"),
-    ENABLE_HUB("enable_smarthome_plus_hub_onboarding"),
+    ENABLE_HUB("enable_hub_onboarding"),
     ENABLE_NETWORK_DEVICE_ONBOARDING_QUERY("enable_network_device_onboarding_query"),
     IOTMI_3P("enable_iotmi_3p"),
     ENABLE_ACCESS_MANAGEMENT("enable_access_management_feature"),

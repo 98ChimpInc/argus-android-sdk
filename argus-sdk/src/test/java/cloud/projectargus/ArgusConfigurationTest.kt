@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
@@ -16,7 +16,7 @@ import org.junit.Test
  *   3. Host app is release + no BuildConfig override → "prod".
  *
  * Branch 2 is verified against a hand-rolled fixture class at
- * `com.telus.argus.buildconfigfixture.BuildConfig` (see the .java file in the
+ * `cloud.projectargus.buildconfigfixture.BuildConfig` (see the .java file in the
  * same test source tree). Branch 3 points the reflection lookup at a package
  * with no BuildConfig class so the lookup falls through.
  */
@@ -41,7 +41,7 @@ class ArgusConfigurationTest {
     @Test
     fun `debuggable host app maps to dev`() {
         val context = mockContext(
-            packageName = "com.telus.argus.buildconfigfixture",
+            packageName = "cloud.projectargus.buildconfigfixture",
             debuggable = true
         )
 
@@ -53,7 +53,7 @@ class ArgusConfigurationTest {
     @Test
     fun `release build with BuildConfig ARGUS_TRACK uses the override value`() {
         val context = mockContext(
-            packageName = "com.telus.argus.buildconfigfixture",
+            packageName = "cloud.projectargus.buildconfigfixture",
             debuggable = false
         )
 
@@ -64,7 +64,7 @@ class ArgusConfigurationTest {
     @Test
     fun `release build with no BuildConfig override falls back to prod`() {
         val context = mockContext(
-            packageName = "com.telus.argus.no_buildconfig_here",
+            packageName = "cloud.projectargus.no_buildconfig_here",
             debuggable = false
         )
 
@@ -74,7 +74,7 @@ class ArgusConfigurationTest {
     @Test
     fun `explicit environment on create wins over auto-detect`() {
         val context = mockContext(
-            packageName = "com.telus.argus.buildconfigfixture",
+            packageName = "cloud.projectargus.buildconfigfixture",
             debuggable = true
         )
 
@@ -92,7 +92,7 @@ class ArgusConfigurationTest {
     @Test
     fun `create without explicit environment uses auto-detect`() {
         val context = mockContext(
-            packageName = "com.telus.argus.buildconfigfixture",
+            packageName = "cloud.projectargus.buildconfigfixture",
             debuggable = false
         )
 

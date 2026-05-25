@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import android.content.Context
 import android.content.pm.ApplicationInfo
@@ -6,15 +6,17 @@ import android.content.pm.ApplicationInfo
 /**
  * Configuration for the Argus feature flag SDK.
  *
+ * @property apiKey Argus API key for this Customer workspace (Argus dashboard → Settings → API key).
  * @property baseURL Root URL of the Argus Cloud Function endpoint.
  * @property tenantId Tenant identifier for multi-tenant resolution.
  * @property environment Target environment for flag resolution (dev, staging, prod).
- *   Optional ... when omitted at construction time, callers should use
- *   [ArgusConfiguration.create] to derive it from the host app's build context
- *   via [autoDetectedEnvironment].
- * @property userId Stable user identifier for rollout bucketing (Firebase Auth UID).
+ *   When the caller cannot determine the environment at construction time,
+ *   use [ArgusConfiguration.create] to derive it from the host app's build
+ *   context via [autoDetectedEnvironment].
+ * @property userId Stable user identifier for rollout bucketing.
  */
 data class ArgusConfiguration(
+    val apiKey: String,
     val baseURL: String,
     val tenantId: String,
     val environment: String,
@@ -46,11 +48,13 @@ data class ArgusConfiguration(
         @JvmOverloads
         fun create(
             context: Context,
+            apiKey: String,
             baseURL: String,
             tenantId: String,
             userId: String,
             environment: String = autoDetectedEnvironment(context)
         ): ArgusConfiguration = ArgusConfiguration(
+            apiKey = apiKey,
             baseURL = baseURL,
             tenantId = tenantId,
             environment = environment,

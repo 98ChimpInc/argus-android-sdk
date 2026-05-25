@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import dagger.Module
 import dagger.Provides
@@ -9,8 +9,8 @@ import javax.inject.Singleton
 /**
  * Optional standalone Hilt module for the Argus SDK.
  *
- * For standalone use outside the SmartHome+ app (e.g., testing, other TELUS apps),
- * the SDK ships this module. In the SmartHome+ app, the [ArgusConfiguration] is
+ * For standalone use (e.g., testing, or apps without their own binding for it),
+ * the SDK ships this module. In a typical host app, the [ArgusConfiguration] is
  * provided by the app's own Hilt module using BuildConfig values and the
  * authenticated user's UID.
  */

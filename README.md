@@ -1,6 +1,13 @@
 # Argus Android SDK
 
-Drop-in replacement for the Firebase Remote Config-backed `FeatureFlagServiceImpl` in the SmartHome+ Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
+Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl` in an Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
+
+> **apiKeys are scoped per Product, not per Customer.** A Customer workspace
+> with multiple Products (for example, a web app and a mobile app under the
+> same studio account) has multiple apiKeys ... one per Product. If your
+> Android app talks to more than one Argus Product, instantiate one
+> `ArgusFeatureFlagServiceImpl` per Product, each with its own
+> `ArgusConfiguration.apiKey`. See [Multiple Products](#multiple-products) below.
 
 ## Architecture
 
@@ -9,9 +16,9 @@ The SDK implements the `FeatureFlagService` interface. Every `@Inject FeatureFla
 ### Key Components
 
 - **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Fetches flags from the Argus endpoint, caches them in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
-- **`ArgusConfiguration`** ... data class holding the endpoint URL, tenant ID, environment, and user ID. Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
+- **`ArgusConfiguration`** ... data class holding the API key, endpoint URL, tenant ID, environment, and user ID. Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
 - **`FNV1a`** ... FNV-1a 32-bit hash for rollout bucketing. Produces identical output to the JavaScript reference in the Argus backend.
-- **`ArgusModule`** ... optional standalone Hilt module for use outside the SmartHome+ app.
+- **`ArgusModule`** ... optional standalone Hilt module for use when the SDK is not wired through the host app's own Hilt graph.
 
 ### Design Principles
 
@@ -28,7 +35,7 @@ In the host app's `settings.gradle.kts`:
 
 ```kotlin
 include(":argus-sdk")
-project(":argus-sdk").projectDir = file("../telus-smarthome-argus-android-sdk/argus-sdk")
+project(":argus-sdk").projectDir = file("../argus-android-sdk/argus-sdk")
 ```
 
 In the host app's `app/build.gradle.kts`:
@@ -48,6 +55,7 @@ Host apps can let the SDK infer `environment` from the build context instead of 
 ```kotlin
 val config = ArgusConfiguration.create(
     context = appContext,
+    apiKey = BuildConfig.ARGUS_API_KEY,
     baseURL = BuildConfig.ARGUS_BASE_URL,
     tenantId = "northwind",
     userId = currentUser.uid
@@ -67,6 +75,7 @@ You can always short-circuit detection by passing `environment` explicitly:
 ```kotlin
 val config = ArgusConfiguration.create(
     context = appContext,
+    apiKey = BuildConfig.ARGUS_API_KEY,
     baseURL = BuildConfig.ARGUS_BASE_URL,
     tenantId = "northwind",
     userId = currentUser.uid,
@@ -74,7 +83,7 @@ val config = ArgusConfiguration.create(
 )
 ```
 
-The 4-arg `ArgusConfiguration(baseURL, tenantId, environment, userId)` constructor is unchanged for callers that already manage `environment` themselves.
+The existing `ArgusConfiguration(apiKey, baseURL, tenantId, environment, userId)` constructor is unchanged for callers that already manage `environment` themselves.
 
 ### Honest caveat on staging vs. prod
 
@@ -107,6 +116,54 @@ android {
 
 The SDK reads `ARGUS_TRACK` from your generated `BuildConfig` reflectively, so it never takes a compile-time dep on your build configuration ... if the constant isn't there, it silently falls through to the default.
 
+## apiKeys, multi-product workspaces
+
+### Where do apiKeys come from?
+
+Open the Argus dashboard → **Settings → API keys**, pick the Product you
+want, and copy its `apiKey`. Each Product in a workspace has its own
+disjoint apiKey; rotating it invalidates the previous value.
+
+### Multiple Products in one app
+
+A single Customer workspace can own multiple Argus Products (web app, mobile
+app, partner integration, etc.), each with its own apiKey, tenants, flags, and
+audit log. If your Android app needs flags from more than one Product, create
+one `ArgusFeatureFlagServiceImpl` per Product:
+
+```kotlin
+val webAppFlags = ArgusFeatureFlagServiceImpl(
+    appVersionName = "1.0.0",
+    appCoroutineScope = scope,
+    moshi = moshi,
+    configuration = ArgusConfiguration.create(
+        context = appContext,
+        apiKey = "argus_<your-web-app-product-key>",
+        baseURL = "https://us-central1-argus-app-f0ff3.cloudfunctions.net",
+        tenantId = "acme_ca",
+        userId = "user-uid"
+        // environment auto-detects per the section above
+    )
+)
+
+val mobileAppFlags = ArgusFeatureFlagServiceImpl(
+    appVersionName = "1.0.0",
+    appCoroutineScope = scope,
+    moshi = moshi,
+    configuration = ArgusConfiguration.create(
+        context = appContext,
+        apiKey = "argus_<your-mobile-app-product-key>",
+        baseURL = "https://us-central1-argus-app-f0ff3.cloudfunctions.net",
+        tenantId = "acme_ca",
+        userId = "user-uid"
+    )
+)
+```
+
+Each instance maintains its own flag cache and `StateFlow`. Wire each one
+into Hilt under a distinct qualifier (e.g. `@Named("webApp")`,
+`@Named("mobileApp")`) so call sites resolve the right service.
+
 ## Running Tests
 
 ```bash
@@ -117,9 +174,10 @@ The SDK reads `ARGUS_TRACK` from your generated `BuildConfig` reflectively, so i
 
 | Dependency | Reason |
 |---|---|
-| `firebase-auth-ktx` | Obtain ID token for Argus endpoint auth |
 | `hilt-android` | `@Inject` / `@Singleton` annotations |
 | `moshi` + `moshi-kotlin` | JSON deserialisation matching existing app pattern |
 | `okhttp` | HTTP client matching existing app pattern |
-| `kotlinx-coroutines-*` | Async fetch, `StateFlow`, `await()` on Tasks |
+| `kotlinx-coroutines-*` | Async fetch and `StateFlow` |
 | `timber` | Logging matching existing app pattern |
+
+The SDK authenticates with an Argus apiKey (`ArgusConfiguration.apiKey`) ... no Firebase dependency. **apiKeys are per-Product**, not per-Customer: a workspace with multiple Products has multiple apiKeys, and each `ArgusFeatureFlagServiceImpl` instance is bound to exactly one of them.

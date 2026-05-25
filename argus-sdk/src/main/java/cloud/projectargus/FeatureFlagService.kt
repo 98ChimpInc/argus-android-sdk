@@ -1,10 +1,10 @@
-package com.telus.argus
+package cloud.projectargus
 
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Standalone copy of the FeatureFlagService interface from the SmartHome+ Android app.
- * This is included in the SDK so it can compile independently. In the real app
+ * Standalone copy of a host app's FeatureFlagService interface.
+ * This is included in the SDK so it can compile independently. In a real app
  * integration, the app's own version is used via dependency injection.
  */
 @Suppress("TooManyFunctions")
@@ -39,7 +39,7 @@ interface FeatureFlagService {
     fun isTwhSupported(): Boolean
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
-    fun isSweeprEnabled(): Boolean
+    fun isSupportChatEnabled(): Boolean
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
     fun isSupportEnabled(): Boolean

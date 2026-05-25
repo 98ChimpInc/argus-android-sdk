@@ -1,6 +1,5 @@
-package com.telus.argus
+package cloud.projectargus
 
-import com.google.firebase.auth.FirebaseAuth
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -8,7 +7,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -74,7 +72,7 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
 
         val url = buildString {
             append(configuration.baseURL)
-            append("/api/flags")
+            append("/resolveFlags")
             append("?platform=android")
             append("&version=").append(URLEncoder.encode(appVersionName, "UTF-8"))
             append("&userId=").append(URLEncoder.encode(configuration.userId, "UTF-8"))
@@ -82,13 +80,9 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             append("&env=").append(URLEncoder.encode(configuration.environment, "UTF-8"))
         }
 
-        val idToken = FirebaseAuth.getInstance().currentUser
-            ?.getIdToken(false)?.await()?.token
-            ?: throw IllegalStateException("No Firebase Auth token available")
-
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer $idToken")
+            .addHeader("Authorization", "Bearer ${configuration.apiKey}")
             .get()
             .build()
 
@@ -265,7 +259,7 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
     override fun isTwhSupported() = getBoolean(FeatureFlag.TWH_SUPPORTED.key)
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
-    override fun isSweeprEnabled() = getBoolean(FeatureFlag.ENABLE_SWEEPR.key)
+    override fun isSupportChatEnabled() = getBoolean(FeatureFlag.ENABLE_SUPPORT_CHAT.key)
 
     @Deprecated("Use isFeatureEnabled with FeatureFlag enum instead")
     override fun isSupportEnabled() = getBoolean(FeatureFlag.ENABLE_SUPPORT.key)

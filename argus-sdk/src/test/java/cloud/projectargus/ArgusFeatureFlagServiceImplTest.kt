@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
@@ -36,7 +36,7 @@ class ArgusFeatureFlagServiceImplTest {
 
         val configuration = ArgusConfiguration(
             baseURL = "https://example.com",
-            tenantId = "telus_ca",
+            tenantId = "acme_corp",
             environment = "prod",
             userId = "test-user-123"
         )
@@ -126,13 +126,13 @@ class ArgusFeatureFlagServiceImplTest {
 
     @Test
     fun `isFeatureEnabled delegates to getBoolean`() {
-        flagCache[FeatureFlag.ENABLE_SWEEPR.key] = "true"
-        assertTrue(service.isFeatureEnabled(FeatureFlag.ENABLE_SWEEPR))
+        flagCache[FeatureFlag.ENABLE_SUPPORT_CHAT.key] = "true"
+        assertTrue(service.isFeatureEnabled(FeatureFlag.ENABLE_SUPPORT_CHAT))
     }
 
     @Test
     fun `isFeatureEnabled returns false for missing flag`() {
-        assertFalse(service.isFeatureEnabled(FeatureFlag.ENABLE_SWEEPR))
+        assertFalse(service.isFeatureEnabled(FeatureFlag.ENABLE_SUPPORT_CHAT))
     }
 
     // ── getFeatureData ──────────────────────────────────────────────────
@@ -166,8 +166,8 @@ class ArgusFeatureFlagServiceImplTest {
 
     @Test
     fun `getFeatureData returns null for flag without rendererType`() {
-        flagCache[FeatureFlag.ENABLE_SWEEPR.key] = "true"
-        assertNull(service.getFeatureData(FeatureFlag.ENABLE_SWEEPR))
+        flagCache[FeatureFlag.ENABLE_SUPPORT_CHAT.key] = "true"
+        assertNull(service.getFeatureData(FeatureFlag.ENABLE_SUPPORT_CHAT))
     }
 
     @Test
@@ -313,12 +313,12 @@ class ArgusFeatureFlagServiceImplTest {
 
     @Test
     fun `deprecated boolean getters delegate correctly`() {
-        flagCache[FeatureFlag.ENABLE_SWEEPR.key] = "true"
+        flagCache[FeatureFlag.ENABLE_SUPPORT_CHAT.key] = "true"
         flagCache[FeatureFlag.TWH_SUPPORTED.key] = "true"
         flagCache[FeatureFlag.ENABLE_SUPPORT.key] = "false"
 
         @Suppress("DEPRECATION")
-        assertTrue(service.isSweeprEnabled())
+        assertTrue(service.isSupportChatEnabled())
         @Suppress("DEPRECATION")
         assertTrue(service.isTwhSupported())
         @Suppress("DEPRECATION")
@@ -334,8 +334,8 @@ class ArgusFeatureFlagServiceImplTest {
             flagCache[key] = value.toString()
         }
 
-        // ENABLE_SWEEPR has defaultValue = false
-        assertFalse(service.getBoolean(FeatureFlag.ENABLE_SWEEPR.key))
+        // ENABLE_SUPPORT_CHAT has defaultValue = false
+        assertFalse(service.getBoolean(FeatureFlag.ENABLE_SUPPORT_CHAT.key))
 
         // ENABLE_OAUTH2_LOGIN has defaultValue = false
         assertFalse(service.getBoolean(FeatureFlag.ENABLE_OAUTH2_LOGIN.key))

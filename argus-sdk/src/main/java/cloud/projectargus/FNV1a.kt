@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 /**
  * FNV-1a 32-bit hash implementation.

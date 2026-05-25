@@ -6,7 +6,7 @@ plugins {
 }
 
 android {
-    namespace = "com.telus.argus"
+    namespace = "cloud.projectargus"
     compileSdk = 34
 
     defaultConfig {
@@ -25,10 +25,6 @@ android {
 }
 
 dependencies {
-    // Firebase
-    implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.auth.ktx)
-
     // Hilt
     implementation(libs.hilt.android)
     kapt(libs.hilt.compiler)
@@ -43,7 +39,6 @@ dependencies {
     // Coroutines
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.android)
-    implementation(libs.kotlinx.coroutines.play.services)
 
     // Logging
     implementation(libs.timber)

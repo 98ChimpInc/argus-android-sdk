@@ -1,4 +1,4 @@
-package com.telus.argus
+package cloud.projectargus
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
