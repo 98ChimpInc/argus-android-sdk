@@ -2,12 +2,24 @@
 
 Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl` in an Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
 
-> **apiKeys are scoped per Product, not per Customer.** A Customer workspace
-> with multiple Products (for example, a web app and a mobile app under the
-> same studio account) has multiple apiKeys ... one per Product. If your
-> Android app talks to more than one Argus Product, instantiate one
+> **apiKeys are scoped per Product *and per environment*.** Each Argus Product
+> issues three apiKeys ... one for `dev`, one for `staging`, one for `prod` ...
+> shaped `argus_<env>_<48-hex>`. The server resolves the calling environment
+> from the key bytes themselves (reverse-indexed), so the apiKey you pass to
+> the SDK is what decides which environment's flags you read.
+>
+> Use a different key per build target: debug builds → dev key, internal
+> testing track → staging key, production track → prod key. A Customer
+> workspace with multiple Products (for example, a web app and a mobile app
+> under the same studio account) has its own triple of keys per Product ... if
+> your Android app talks to more than one Argus Product, instantiate one
 > `ArgusFeatureFlagServiceImpl` per Product, each with its own
-> `ArgusConfiguration.apiKey`. See [Multiple Products](#multiple-products) below.
+> `ArgusConfiguration.apiKey`. See [apiKeys, multi-product workspaces](#apikeys-multi-product-workspaces)
+> below.
+>
+> Pre-M-2 unprefixed apiKeys (issued before the per-environment split) are
+> still accepted and resolve as `env=prod` ... no migration burden on existing
+> integrations.
 
 ## Architecture
 
@@ -49,6 +61,21 @@ implementation(project(":argus-sdk"))
 The `ARGUS_ENABLED` feature flag (read from Firebase Remote Config) controls which implementation is wired at runtime. Default is `false` (Firebase RC). Set to `true` in the Remote Config console to switch to Argus.
 
 ## Environment auto-detection
+
+> **What the SDK detects is a display-layer hint, not the binding.** Under
+> M-2, the server resolves the calling environment from the apiKey bytes
+> (each Product issues a distinct `argus_dev_*` / `argus_staging_*` /
+> `argus_prod_*` key). The `environment` value the SDK detects is reported
+> on `ArgusConfiguration` and surfaces in things like debug overlays and
+> analytics tagging ... it is *not* what tells the server which environment
+> to read from. **The apiKey wins.**
+>
+> If you hardcode the prod apiKey in a debug build, the SDK's
+> `autoDetectedEnvironment(context)` will return `"dev"` but the server
+> will resolve as `prod` and hand back production flag values. To keep
+> display and server agreement, pair each build target with the matching
+> per-environment apiKey: debug → dev key, internal track → staging key,
+> production track → prod key.
 
 Host apps can let the SDK infer `environment` from the build context instead of hard-coding it. Use `ArgusConfiguration.create(...)` and omit the `environment` argument:
 
@@ -151,15 +178,61 @@ runCatching boundary). When in doubt, check the resolved environment via
 ### Where do apiKeys come from?
 
 Open the Argus dashboard → **Settings → API keys**, pick the Product you
-want, and copy its `apiKey`. Each Product in a workspace has its own
-disjoint apiKey; rotating it invalidates the previous value.
+want, and you'll see a three-row table ... one row per environment (`dev`,
+`staging`, `prod`), each with its own key shaped `argus_<env>_<48-hex>`
+(e.g. `argus_prod_3f9c…`). Copy the key for the environment that matches
+the build target you're configuring.
+
+The server uses the key bytes to decide which environment to read from
+... there is no separate `environment` parameter on the wire ... so each
+Product has three keys and you choose which one to ship in each build
+target:
+
+| Build target | apiKey to ship |
+|---|---|
+| Debug / local | the Product's `argus_dev_*` key |
+| Internal testing track | the Product's `argus_staging_*` key |
+| Production / Play Store | the Product's `argus_prod_*` key |
+
+Each Product's three keys are disjoint and rotate independently; rotating
+one environment's key invalidates only that environment's previous value.
+
+> **Compat note.** Pre-M-2 unprefixed apiKeys (no `argus_<env>_` prefix)
+> are still accepted and resolve as `env=prod`. Existing integrations
+> keep working without changes ... you only need to switch to per-env
+> keys when you want non-prod targets to read non-prod flags.
 
 ### Multiple Products in one app
 
 A single Customer workspace can own multiple Argus Products (web app, mobile
-app, partner integration, etc.), each with its own apiKey, tenants, flags, and
+app, partner integration, etc.), each with its own *triple* of apiKeys
+(`argus_dev_*` / `argus_staging_*` / `argus_prod_*`), tenants, flags, and
 audit log. If your Android app needs flags from more than one Product, create
-one `ArgusFeatureFlagServiceImpl` per Product:
+one `ArgusFeatureFlagServiceImpl` per Product, and pass each one the
+environment-matched key for the current build target.
+
+The cleanest pattern is to declare a `BuildConfig` String per Product, one
+per build target, holding the right `argus_<env>_*` key for that target:
+
+```kotlin
+// app/build.gradle.kts
+android {
+    buildTypes {
+        debug {
+            buildConfigField("String", "ARGUS_KEY_WEB",    "\"argus_dev_<48-hex>\"")
+            buildConfigField("String", "ARGUS_KEY_MOBILE", "\"argus_dev_<48-hex>\"")
+        }
+        release {
+            buildConfigField("String", "ARGUS_KEY_WEB",    "\"argus_prod_<48-hex>\"")
+            buildConfigField("String", "ARGUS_KEY_MOBILE", "\"argus_prod_<48-hex>\"")
+        }
+    }
+    // ...flavors for staging (internal track) per the auto-detection section above
+    buildFeatures { buildConfig = true }
+}
+```
+
+Then wire one service instance per Product:
 
 ```kotlin
 val webAppFlags = ArgusFeatureFlagServiceImpl(
@@ -168,11 +241,11 @@ val webAppFlags = ArgusFeatureFlagServiceImpl(
     moshi = moshi,
     configuration = ArgusConfiguration.create(
         context = appContext,
-        apiKey = "argus_<your-web-app-product-key>",
+        apiKey = BuildConfig.ARGUS_KEY_WEB,     // argus_<env>_* per build target
         baseURL = "https://us-central1-argus-app-f0ff3.cloudfunctions.net",
         tenantId = "acme_ca",
         userId = "user-uid"
-        // environment auto-detects per the section above
+        // environment auto-detects per the section above (display-layer only)
     )
 )
 
@@ -182,7 +255,7 @@ val mobileAppFlags = ArgusFeatureFlagServiceImpl(
     moshi = moshi,
     configuration = ArgusConfiguration.create(
         context = appContext,
-        apiKey = "argus_<your-mobile-app-product-key>",
+        apiKey = BuildConfig.ARGUS_KEY_MOBILE,  // argus_<env>_* per build target
         baseURL = "https://us-central1-argus-app-f0ff3.cloudfunctions.net",
         tenantId = "acme_ca",
         userId = "user-uid"
@@ -192,7 +265,9 @@ val mobileAppFlags = ArgusFeatureFlagServiceImpl(
 
 Each instance maintains its own flag cache and `StateFlow`. Wire each one
 into Hilt under a distinct qualifier (e.g. `@Named("webApp")`,
-`@Named("mobileApp")`) so call sites resolve the right service.
+`@Named("mobileApp")`) so call sites resolve the right service. The
+structural pattern is unchanged from before per-env apiKeys ... only the
+keys themselves are env-scoped now.
 
 ## Running Tests
 
@@ -210,4 +285,4 @@ into Hilt under a distinct qualifier (e.g. `@Named("webApp")`,
 | `kotlinx-coroutines-*` | Async fetch and `StateFlow` |
 | `timber` | Logging matching existing app pattern |
 
-The SDK authenticates with an Argus apiKey (`ArgusConfiguration.apiKey`) ... no Firebase dependency. **apiKeys are per-Product**, not per-Customer: a workspace with multiple Products has multiple apiKeys, and each `ArgusFeatureFlagServiceImpl` instance is bound to exactly one of them.
+The SDK authenticates with an Argus apiKey (`ArgusConfiguration.apiKey`) ... no Firebase dependency. **apiKeys are per-Product *and per environment***, not per-Customer: a workspace with multiple Products has multiple triples of apiKeys (`argus_dev_*` / `argus_staging_*` / `argus_prod_*` per Product), and each `ArgusFeatureFlagServiceImpl` instance is bound to exactly one of them. The server resolves the calling environment from the key bytes, so pairing each build target with the matching key is what controls which environment's flags you read.
