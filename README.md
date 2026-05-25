@@ -116,6 +116,36 @@ android {
 
 The SDK reads `ARGUS_TRACK` from your generated `BuildConfig` reflectively, so it never takes a compile-time dep on your build configuration ... if the constant isn't there, it silently falls through to the default.
 
+### R8 / Proguard
+
+The reflective lookup requires `ARGUS_TRACK` to survive code shrinking on
+release builds. Most apps don't have to do anything — the field survives
+default R8 because `BuildConfig.DEBUG` is referenced everywhere and the
+class gets kept by association. But if your release config is aggressive
+(custom shrinker rules, `-allowobfuscation`, or you've stripped
+`BuildConfig` explicitly) the field can disappear, and an internal-track
+build silently resolves as `"prod"` instead of `"staging"`.
+
+To pin it, add this rule to your app's `proguard-rules.pro`:
+
+```
+-keep class **.BuildConfig { public static java.lang.String ARGUS_TRACK; }
+```
+
+If you only set `ARGUS_TRACK` on a subset of flavors, scope the rule to
+that package:
+
+```
+-keep class com.acme.app.BuildConfig { public static java.lang.String ARGUS_TRACK; }
+```
+
+The symptom you'd see without the rule: a Play Internal Testing build
+ships with `BuildConfig.ARGUS_TRACK = "staging"` defined in source, but
+the SDK resolves environment to `"prod"` on cold-start. Logcat shows the
+reflection caught a `NoSuchFieldException` (silently — that's the
+runCatching boundary). When in doubt, check the resolved environment via
+`ArgusConfiguration.autoDetectedEnvironment(context)` in a debug overlay.
+
 ## apiKeys, multi-product workspaces
 
 ### Where do apiKeys come from?
