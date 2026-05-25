@@ -1,5 +1,16 @@
 # Decisions Log
 
+## 2026-05-25 — Auto-detect `environment` from host-app build context
+
+**Decision**: Make `environment` optional via a new `ArgusConfiguration.create(context, ...)` companion factory that defaults to an `autoDetectedEnvironment(context)` value. Detection priority: `ApplicationInfo.FLAG_DEBUGGABLE` → `"dev"`; reflective read of `<hostPackage>.BuildConfig.ARGUS_TRACK` → that value; else `"prod"`. The existing 4-arg `ArgusConfiguration(baseURL, tenantId, environment, userId)` constructor is preserved untouched, so all existing call sites compile + behave identically.
+
+**Reason**: Host apps already encode `dev`/`staging`/`prod` in their build configuration. Forcing them to wire `environment` into Hilt manually is redundant + error-prone (we've already seen flag fetches fire against the wrong env in QA). Reflection on `BuildConfig.ARGUS_TRACK` keeps the SDK from taking a compile-time dep on the customer's build config ... if the constant isn't there, the lookup silently falls through to `"prod"`. Caveat: Google Play Internal Testing and Production builds are byte-identical at runtime, so the staging-vs-prod distinction needs a build-time signal the customer sets (documented in the README as a `productFlavors` pattern).
+
+**Alternatives considered**:
+- A `lateinit` `environment` populated at first fetch ... rejected because it'd break the immutability contract of the data class.
+- Reading a Manifest `<meta-data>` entry ... rejected as more boilerplate than `buildConfigField` for the customer.
+- Compile-time API for the customer to register their `BuildConfig::class` ... rejected as over-engineering for the v1.1 surface; the reflection lookup is a single read on cold-start with a single `runCatching` guard.
+
 ## 2026-04-03 — Standalone copies of interface, enum, and data models
 
 **Decision**: Include standalone copies of `FeatureFlagService`, `FeatureFlag`, and all `FeatureFlagData` model classes within the SDK's `com.telus.argus` package.
