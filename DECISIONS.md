@@ -1,5 +1,16 @@
 # Decisions Log
 
+## 2026-06-02 — ⭐ CANONICAL: real-time push via Firestore listeners (supersedes the 2026-05-18 HTTP-poll pivot)
+
+> **AUTHORITATIVE / owner-approved (shahin@98chimp.com).** Canonical record:
+> argus-web-app/DECISIONS.md (2026-06-02, #215).
+
+**Decision**: `ArgusFeatureFlagServiceImpl` delivers flag changes via **Firestore real-time listeners** (snapshot `Flow` → `StateFlow`), not OkHttp polling. On start it trades its apiKey for a scoped Firebase custom token (`issueStreamToken` callable), signs in, and listens to its product's flag/env docs; changes push into the `StateFlow` in ~1s. Per-user/per-device targeting resolves locally via the SDK's existing `FNV1a` (rollout) + `compareVersion` (conditions). The `resolveFlags` OkHttp call + polling intervals are demoted to a **cold-start / fallback path only**.
+
+**This DIRECTLY SUPERSEDES the 2026-05-18 decision below** ("API-key auth, dropping the Firebase Auth dependency"), which moved the SDK to apiKey-only HTTP polling and removed Firebase/Firestore from the client — that pivot was made **without owner authorization** and silently dropped the real-time push capability. Firebase is re-added on the client (consumers use **Argus's** Firebase project via public config + a scoped custom token; they still need no Firebase project of their own). Do not reintroduce poll-only or SSE as the primary channel.
+
+**Reason / governance**: push-to-client is the core value proposition. No future pivot of the transport/auth/real-time model without explicit owner approval, recorded here as superseding.
+
 ## 2026-05-25 — Auto-detect `environment` from host-app build context
 
 **Decision**: Make `environment` optional via a new `ArgusConfiguration.create(context, ...)` companion factory that defaults to an `autoDetectedEnvironment(context)` value. Detection priority: `ApplicationInfo.FLAG_DEBUGGABLE` → `"dev"`; reflective read of `<hostPackage>.BuildConfig.ARGUS_TRACK` → that value; else `"prod"`. The existing 5-arg `ArgusConfiguration(apiKey, baseURL, tenantId, environment, userId)` constructor is preserved untouched, so all existing call sites compile + behave identically.
@@ -24,7 +35,7 @@ can have disjoint apiKeys per app.
 
 **Alternatives considered**: None ... the SDK API is unaffected.
 
-## 2026-05-18 — API-key auth, dropping the Firebase Auth dependency
+## 2026-05-18 — API-key auth, dropping the Firebase Auth dependency  ⚠️ SUPERSEDED (see 2026-06-02 canonical entry above)
 
 **Decision**: Authenticate to the Argus `resolveFlags` endpoint with a per-Customer
 API key (`ArgusConfiguration.apiKey`, sent as `Authorization: Bearer <apiKey>`)
