@@ -1,6 +1,6 @@
 # Argus Android SDK
 
-Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl` in an Android app. Fetches resolved flag values from the Argus HTTP endpoint instead of Firebase Remote Config.
+Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl` in an Android app. Delivers resolved flag values via **real-time Firestore listeners** (primary channel) — flag changes pushed from the Argus dashboard land in the app in ~1s, no polling — with the Argus `resolveFlags` HTTP endpoint kept as a cold-start / fallback path. (Canonical architecture, see `DECISIONS.md` 2026-06-02, #215. This supersedes the earlier poll-only design.)
 
 > **apiKeys are scoped per Product *and per environment*.** Each Argus Product
 > issues three apiKeys ... one for `dev`, one for `staging`, one for `prod` ...
@@ -25,19 +25,59 @@ Drop-in replacement for a Firebase Remote Config-backed `FeatureFlagServiceImpl`
 
 The SDK implements the `FeatureFlagService` interface. Every `@Inject FeatureFlagService` usage in the host app works unchanged ... the only change is where flag values come from.
 
+### Real-time push (primary channel, #215)
+
+`initialize()` brings up the real-time channel in four steps:
+
+1. **Bootstrap a scoped token.** The SDK `POST`s its Argus apiKey to
+   `{baseURL}/issueStreamToken` (`Authorization: Bearer <apiKey>`) and receives
+   `{ token, customerId, productId, env, tenantId }`. The `token` is a
+   short-lived Firebase **custom token** scoped, via claims, to exactly this
+   Product's flag/condition documents.
+2. **Init a named Firebase app.** The SDK initialises a *named* secondary
+   `FirebaseApp` (`"argus-sdk"`) so it never collides with the host app's
+   default `FirebaseApp`. It uses **Argus's** Firebase project (public config
+   shipped in the SDK) ... consumers never set up a Firebase project of their
+   own. When `ArgusConfiguration.FirebaseConfig.useEmulator` is set, the named
+   app's Auth + Firestore point at the local emulators instead.
+3. **Sign in** with `signInWithCustomToken(token)`.
+4. **Open snapshot listeners** on the Product's `flags` query, each
+   `flags/{id}/environments/{env}` doc, the tenant-override doc when
+   tenant-scoped, and `conditions`. On *any* change the SDK re-runs client-side
+   resolution and pushes new values into the cache. The Firestore rules permit
+   this identity to **read only** its own Product's docs.
+
+**Client-side resolution** (`ArgusFlagResolver`) mirrors the server
+`resolveFlags` algorithm exactly — archived/draft skip, env value vs. default,
+tenant-override priority, condition priority ordering + version/platform
+matching, and rollout bucketing via the shared `FNV1a` — so a flag resolves to
+the same value whether it arrives via the listener or the HTTP fallback.
+
+Call `ArgusFeatureFlagServiceImpl.close()` to detach the listeners and tear down
+the named Firebase app (e.g. on sign-out).
+
+### Fallback channel: `resolveFlags` HTTP
+
+The `GET {baseURL}/resolveFlags` fetch is **demoted to cold-start / fallback
+only**: it paints current values on first launch before the listener delivers
+its first snapshot, and it covers the case where Firebase init / sign-in fails
+(the SDK stays on the last fetched values and remains `isActive == true`).
+
 ### Key Components
 
-- **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Fetches flags from the Argus endpoint, caches them in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
-- **`ArgusConfiguration`** ... data class holding the API key, endpoint URL, tenant ID, environment, and user ID. Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
+- **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Runs the real-time listener (primary) + HTTP fallback, caches resolved values in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
+- **`ArgusFlagResolver`** ... pure, dependency-free client-side mirror of the server `resolveFlags` algorithm. Unit-tested without a live backend.
+- **`ArgusConfiguration`** ... data class holding the API key, endpoint URL, tenant ID, environment, user ID, and an optional `FirebaseConfig` (project id / app id / api key + emulator host/ports, all defaulted). Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
 - **`FNV1a`** ... FNV-1a 32-bit hash for rollout bucketing. Produces identical output to the JavaScript reference in the Argus backend.
 - **`ArgusModule`** ... optional standalone Hilt module for use when the SDK is not wired through the host app's own Hilt graph.
 
 ### Design Principles
 
 1. **Zero call-site changes** ... every existing `@Inject FeatureFlagService` usage works unchanged.
-2. **Non-blocking initialisation** ... `initialize()` returns immediately. Flag fetch runs in a coroutine.
-3. **Offline resilience** ... falls back to `FeatureFlag.getDefaultValues()` when the endpoint is unreachable.
-4. **Platform-aware JSON extraction** ... extracts the `"android"` sub-object from platform-split JSON before deserialisation.
+2. **Real-time first** ... flag changes push to the app via Firestore listeners in ~1s; no polling on the happy path.
+3. **Non-blocking initialisation** ... `initialize()` returns immediately. Bootstrap + listener attach run in a coroutine.
+4. **Graceful degrade** ... cold-start HTTP fetch paints first; if Firebase init / sign-in fails the SDK falls back to the last HTTP values, and ultimately to `FeatureFlag.getDefaultValues()` when everything is unreachable.
+5. **Platform-aware JSON extraction** ... extracts the `"android"` sub-object from platform-split JSON before deserialisation.
 
 ## Integration
 
@@ -281,8 +321,22 @@ keys themselves are env-scoped now.
 |---|---|
 | `hilt-android` | `@Inject` / `@Singleton` annotations |
 | `moshi` + `moshi-kotlin` | JSON deserialisation matching existing app pattern |
-| `okhttp` | HTTP client matching existing app pattern |
-| `kotlinx-coroutines-*` | Async fetch and `StateFlow` |
+| `okhttp` | HTTP client for the `issueStreamToken` bootstrap + `resolveFlags` fallback fetch |
+| `firebase-bom` + `firebase-auth-ktx` + `firebase-firestore-ktx` | Real-time push primary channel (#215): scoped sign-in + Firestore snapshot listeners |
+| `kotlinx-coroutines-*` (incl. `play-services`) | Async bootstrap, `StateFlow`, and `Task.await()` for `signInWithCustomToken` |
 | `timber` | Logging matching existing app pattern |
 
-The SDK authenticates with an Argus apiKey (`ArgusConfiguration.apiKey`) ... no Firebase dependency. **apiKeys are per-Product *and per environment***, not per-Customer: a workspace with multiple Products has multiple triples of apiKeys (`argus_dev_*` / `argus_staging_*` / `argus_prod_*` per Product), and each `ArgusFeatureFlagServiceImpl` instance is bound to exactly one of them. The server resolves the calling environment from the key bytes, so pairing each build target with the matching key is what controls which environment's flags you read.
+The SDK still authenticates to Argus with your Argus apiKey
+(`ArgusConfiguration.apiKey`). For the real-time channel it trades that key for
+a scoped Firebase custom token and connects to **Argus's own Firebase project**
+(public config bundled in the SDK) — **you do not create or configure a
+Firebase project of your own**; the host app's existing default `FirebaseApp`
+(if any) is left untouched, since the SDK runs on a separate named app.
+
+**apiKeys are per-Product *and per environment***, not per-Customer: a workspace
+with multiple Products has multiple triples of apiKeys (`argus_dev_*` /
+`argus_staging_*` / `argus_prod_*` per Product), and each
+`ArgusFeatureFlagServiceImpl` instance is bound to exactly one of them. The
+server resolves the calling environment from the key bytes, so pairing each
+build target with the matching key is what controls which environment's flags
+you read.

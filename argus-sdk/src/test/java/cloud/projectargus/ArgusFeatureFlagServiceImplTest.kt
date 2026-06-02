@@ -35,6 +35,7 @@ class ArgusFeatureFlagServiceImplTest {
             .build()
 
         val configuration = ArgusConfiguration(
+            apiKey = "argus_prod_test_key",
             baseURL = "https://example.com",
             tenantId = "acme_corp",
             environment = "prod",

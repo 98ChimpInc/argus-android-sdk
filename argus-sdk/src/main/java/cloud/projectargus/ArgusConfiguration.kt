@@ -14,14 +14,52 @@ import android.content.pm.ApplicationInfo
  *   use [ArgusConfiguration.create] to derive it from the host app's build
  *   context via [autoDetectedEnvironment].
  * @property userId Stable user identifier for rollout bucketing.
+ * @property firebase Firebase project + emulator settings used by the
+ *   real-time push channel (#215). Optional: defaults to Argus's production
+ *   Firebase project so a consumer normally supplies only the Argus [apiKey].
+ *   Set [FirebaseConfig.useEmulator] (via the convergence harness / local dev)
+ *   to point the listener at the Firestore + Auth emulators instead of prod.
  */
 data class ArgusConfiguration(
     val apiKey: String,
     val baseURL: String,
     val tenantId: String,
     val environment: String,
-    val userId: String
+    val userId: String,
+    val firebase: FirebaseConfig = FirebaseConfig()
 ) {
+
+    /**
+     * Firebase connection settings for the real-time push channel.
+     *
+     * The SDK initialises a *named* secondary [com.google.firebase.FirebaseApp]
+     * from these values (never the host app's default app), trades the Argus
+     * apiKey for a scoped custom token via `issueStreamToken`, signs in, and
+     * opens Firestore snapshot listeners on its own Product's flag docs.
+     *
+     * @property projectId Argus Firebase project id. Defaults to the Argus prod
+     *   project. Must match the project that minted the custom token.
+     * @property applicationId Firebase Android `applicationId` (a.k.a. mobilesdk
+     *   app id) for the Argus app registration. Placeholder for prod wiring.
+     * @property apiKey Firebase Web/Android API key for the Argus project. This
+     *   is the public Firebase config key (safe to ship) — NOT the Argus apiKey.
+     * @property useEmulator When true, the named app's Auth + Firestore point at
+     *   the local emulator at [emulatorHost] / the given ports instead of prod.
+     *   Used by the convergence harness and local dev for dev/prod parity.
+     * @property emulatorHost Host the emulators bind to (IPv4 `127.0.0.1` for the
+     *   Firebase emulators, per the project's local-dev notes).
+     * @property authEmulatorPort Firebase Auth emulator port.
+     * @property firestoreEmulatorPort Firestore emulator port.
+     */
+    data class FirebaseConfig(
+        val projectId: String = DEFAULT_PROJECT_ID,
+        val applicationId: String = DEFAULT_APPLICATION_ID,
+        val apiKey: String = DEFAULT_FIREBASE_API_KEY,
+        val useEmulator: Boolean = false,
+        val emulatorHost: String = DEFAULT_EMULATOR_HOST,
+        val authEmulatorPort: Int = DEFAULT_AUTH_EMULATOR_PORT,
+        val firestoreEmulatorPort: Int = DEFAULT_FIRESTORE_EMULATOR_PORT
+    )
 
     companion object {
 
@@ -52,13 +90,15 @@ data class ArgusConfiguration(
             baseURL: String,
             tenantId: String,
             userId: String,
-            environment: String = autoDetectedEnvironment(context)
+            environment: String = autoDetectedEnvironment(context),
+            firebase: FirebaseConfig = FirebaseConfig()
         ): ArgusConfiguration = ArgusConfiguration(
             apiKey = apiKey,
             baseURL = baseURL,
             tenantId = tenantId,
             environment = environment,
-            userId = userId
+            userId = userId,
+            firebase = firebase
         )
 
         /**
@@ -109,5 +149,20 @@ data class ArgusConfiguration(
         internal const val ENV_DEV = "dev"
         internal const val ENV_PROD = "prod"
         private const val BUILD_CONFIG_FIELD = "ARGUS_TRACK"
+
+        // ── Firebase prod placeholders (#215) ───────────────────────
+        // Argus's production Firebase project. The apiKey here is the
+        // PUBLIC Firebase config key (ships in every Firebase client app
+        // and is safe to commit) — distinct from the secret Argus apiKey.
+        // Real prod values are wired in before GA; these placeholders let
+        // the SDK compile and run against the emulator today.
+        private const val DEFAULT_PROJECT_ID = "demo-argus"
+        private const val DEFAULT_APPLICATION_ID = "1:000000000000:android:0000000000000000"
+        private const val DEFAULT_FIREBASE_API_KEY = "AIzaSyArgusPlaceholderKey0000000000000000"
+
+        // Emulators bind to IPv4 127.0.0.1 (project local-dev convention).
+        private const val DEFAULT_EMULATOR_HOST = "127.0.0.1"
+        private const val DEFAULT_AUTH_EMULATOR_PORT = 9099
+        private const val DEFAULT_FIRESTORE_EMULATOR_PORT = 8080
     }
 }

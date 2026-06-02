@@ -10,10 +10,12 @@ firebase-bom = "32.7.1"
 junit = "4.13.2"
 mockk = "1.13.9"
 turbine = "1.0.0"
+json = "20231013"
 
 [libraries]
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebase-bom" }
 firebase-auth-ktx = { group = "com.google.firebase", name = "firebase-auth-ktx" }
+firebase-firestore-ktx = { group = "com.google.firebase", name = "firebase-firestore-ktx" }
 hilt-android = { group = "com.google.dagger", name = "hilt-android", version.ref = "hilt" }
 hilt-compiler = { group = "com.google.dagger", name = "hilt-compiler", version.ref = "hilt" }
 moshi = { group = "com.squareup.moshi", name = "moshi", version.ref = "moshi" }
@@ -28,6 +30,7 @@ junit = { group = "junit", name = "junit", version.ref = "junit" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
+json = { group = "org.json", name = "json", version.ref = "json" }
 
 [plugins]
 android-library = { id = "com.android.library", version.ref = "agp" }

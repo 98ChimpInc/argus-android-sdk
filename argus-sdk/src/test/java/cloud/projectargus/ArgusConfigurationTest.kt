@@ -80,6 +80,7 @@ class ArgusConfigurationTest {
 
         val config = ArgusConfiguration.create(
             context = context,
+            apiKey = "argus_prod_test_key",
             baseURL = "https://example.com",
             tenantId = "northwind",
             userId = "user-1",
@@ -98,6 +99,7 @@ class ArgusConfigurationTest {
 
         val config = ArgusConfiguration.create(
             context = context,
+            apiKey = "argus_staging_test_key",
             baseURL = "https://example.com",
             tenantId = "northwind",
             userId = "user-1"
