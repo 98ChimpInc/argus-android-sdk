@@ -222,7 +222,10 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
 
     private suspend fun issueStreamToken(): StreamBootstrap {
         val request = Request.Builder()
-            .url("${configuration.baseURL}/issueStreamToken")
+            // #221: declare platform so the server returns the Android Firebase
+            // config (a web appId is rejected by the native SDK with
+            // "invalid GOOGLE_APP_ID").
+            .url("${configuration.baseURL}/issueStreamToken?platform=android")
             .addHeader("Authorization", "Bearer ${configuration.apiKey}")
             .post(ByteArray(0).toRequestBody(null))
             .build()
