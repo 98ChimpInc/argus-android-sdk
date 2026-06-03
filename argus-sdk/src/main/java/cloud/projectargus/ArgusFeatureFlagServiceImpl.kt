@@ -1,5 +1,12 @@
 package cloud.projectargus
 
+import com.google.firebase.FirebaseApp
+import com.google.firebase.FirebaseOptions
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreSettings
+import com.google.firebase.firestore.ListenerRegistration
+import com.google.firebase.firestore.memoryCacheSettings
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -7,9 +14,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import timber.log.Timber
@@ -24,9 +35,27 @@ import javax.inject.Singleton
  * Argus-backed implementation of [FeatureFlagService].
  *
  * Drop-in replacement for the Firebase Remote Config-backed FeatureFlagServiceImpl.
- * Fetches resolved flag values from the Argus HTTP endpoint and caches them in a
- * thread-safe [ConcurrentHashMap]. Falls back to bundled defaults from [FeatureFlag]
- * enum entries if the endpoint is unreachable.
+ *
+ * **Primary channel (#215): real-time push via Firestore listeners.** On
+ * [initialize] the SDK trades its Argus apiKey for a scoped Firebase custom
+ * token (`issueStreamToken`), signs in to a *named* Firebase app, and opens
+ * snapshot listeners on its own Product's flag/env/tenant/condition documents.
+ *
+ * **Self-configuring (no consumer Firebase config required).** The
+ * `issueStreamToken` response also carries a `firebaseConfig` object
+ * (`projectId` / `appId` / `apiKey` / `authDomain` / optional `storageBucket` /
+ * `messagingSenderId` / `useEmulator`). The SDK builds the named app's
+ * [FirebaseOptions] from that, so the consumer supplies only the Argus apiKey
+ * (+ endpoint base URL). An explicit [ArgusConfiguration.firebase] override, if
+ * set, takes precedence over the server-returned config.
+ * Any change re-runs client-side resolution ([ArgusFlagResolver]) and pushes
+ * the new values into the [isActive]-gated cache in ~1s — no polling.
+ *
+ * **Fallback channel: the `resolveFlags` HTTP fetch.** Used (a) for first paint
+ * before the listener delivers its first snapshot, and (b) as a graceful
+ * degrade if Firebase init / sign-in fails. Resolved values are cached in a
+ * thread-safe [ConcurrentHashMap]; bundled [FeatureFlag] enum defaults seed the
+ * cache so getters always return something sane.
  */
 @Singleton
 @Suppress("TooManyFunctions")
@@ -47,15 +76,48 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
 
+    // ── Real-time push state (#215) ─────────────────────────────────────
+    // Named Firebase app + listener registrations, torn down on [close].
+    // The latest snapshot of each source is held here and re-resolved on any
+    // change. Guarded by [streamMutex] because listener callbacks and the
+    // bootstrap can interleave on different threads.
+    private var firebaseApp: FirebaseApp? = null
+    private var firestore: FirebaseFirestore? = null
+    // Thread-safe: env/tenant listeners are bound from the flags-listener
+    // coroutine while [close] may iterate concurrently.
+    private val listenerRegistrations =
+        java.util.concurrent.CopyOnWriteArrayList<ListenerRegistration>()
+    private val streamMutex = Mutex()
+
+    // flagId -> /flags/{flagId} doc data
+    private val flagDocs = mutableMapOf<String, Map<String, Any?>>()
+    // flagId -> /flags/{flagId}/environments/{env} doc data
+    private val envDocs = mutableMapOf<String, Map<String, Any?>>()
+    // flagId -> /flags/{flagId}/environments/{env}/tenants/{tenantId} doc data
+    private val tenantDocs = mutableMapOf<String, Map<String, Any?>>()
+    // condition name -> /conditions/{id} doc data
+    private val conditionDocs = mutableMapOf<String, Map<String, Any?>>()
+
     // ── Initialisation ──────────────────────────────────────────────────
 
     override fun initialize() {
         appCoroutineScope.launch {
+            loadDefaults()
+            // Cold-start paint via the HTTP fallback first, so getters return
+            // current server values immediately even before the listener's
+            // first snapshot arrives. Failure here is non-fatal — the
+            // listener (or bundled defaults) covers it.
             try {
-                loadDefaults()
                 fetchFlags()
             } catch (ex: Exception) {
-                Timber.e(ex, "Argus initialisation failed, using defaults")
+                Timber.w(ex, "Argus cold-start fetch failed; awaiting real-time listener")
+            }
+            // Promote to the real-time channel. On any failure we stay on the
+            // last fetched/default values and keep [isActive] true.
+            try {
+                startRealtime()
+            } catch (ex: Exception) {
+                Timber.e(ex, "Argus real-time init failed; remaining on HTTP fallback values")
                 _remoteConfigState.value = true
             }
         }
@@ -67,9 +129,9 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         }
     }
 
-    private suspend fun fetchFlags() {
-        _remoteConfigState.value = false
+    // ── Fallback channel: resolveFlags HTTP fetch ───────────────────────
 
+    private suspend fun fetchFlags() {
         val url = buildString {
             append(configuration.baseURL)
             append("/resolveFlags")
@@ -104,6 +166,335 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         }
 
         _remoteConfigState.value = true
+    }
+
+    // ── Primary channel: real-time Firestore listeners (#215) ───────────
+
+    /**
+     * Bootstrap the real-time push channel:
+     *  1. trade the apiKey for a scoped Firebase custom token + the project's
+     *     `firebaseConfig` (existing OkHttp);
+     *  2. resolve the effective Firebase config (consumer override →
+     *     server-returned `firebaseConfig` → bundled defaults) and init a
+     *     *named* Firebase app (so we never clash with the host app's default
+     *     app), pointed at the emulator when the resolved config says so;
+     *  3. sign in with the custom token;
+     *  4. open snapshot listeners on the flags query + each env doc (+ tenant
+     *     override doc when tenant-scoped) + conditions.
+     *
+     * Throws on any bootstrap failure so [initialize] can fall back cleanly.
+     */
+    private suspend fun startRealtime() {
+        val bootstrap = issueStreamToken()
+
+        // Precedence: an explicit consumer override wins; otherwise self-
+        // configure from the server-returned `firebaseConfig`; otherwise fall
+        // back to the bundled defaults (legacy server with no firebaseConfig).
+        val effectiveFirebase = configuration.firebase
+            ?: bootstrap.firebaseConfig
+            ?: ArgusConfiguration.FirebaseConfig()
+
+        val app = initFirebaseApp(effectiveFirebase)
+        firebaseApp = app
+
+        val auth = FirebaseAuth.getInstance(app)
+        val db = FirebaseFirestore.getInstance(app)
+        firestore = db
+
+        auth.signInWithCustomToken(bootstrap.token).await()
+
+        attachListeners(db, bootstrap)
+    }
+
+    /** Bootstrap claims returned by `issueStreamToken`. */
+    private data class StreamBootstrap(
+        val token: String,
+        val customerId: String,
+        val productId: String,
+        val env: String,
+        val tenantId: String?,
+        // Self-configuration: the Firebase project the named app should connect
+        // to, as returned by the server. Null only on legacy servers that
+        // predate the `firebaseConfig` field — the SDK then falls back to the
+        // [ArgusConfiguration.FirebaseConfig] defaults.
+        val firebaseConfig: ArgusConfiguration.FirebaseConfig?
+    )
+
+    private suspend fun issueStreamToken(): StreamBootstrap {
+        val request = Request.Builder()
+            .url("${configuration.baseURL}/issueStreamToken")
+            .addHeader("Authorization", "Bearer ${configuration.apiKey}")
+            .post(ByteArray(0).toRequestBody(null))
+            .build()
+
+        val response = withContext(Dispatchers.IO) {
+            httpClient.newCall(request).execute()
+        }
+        if (!response.isSuccessful) {
+            throw IOException("issueStreamToken failed: ${response.code}")
+        }
+        val body = response.body?.string()
+            ?: throw IOException("issueStreamToken response body is null")
+
+        val json = JSONObject(body)
+        val token = json.optString("token").takeIf { it.isNotEmpty() }
+            ?: throw IOException("issueStreamToken response missing token")
+        return StreamBootstrap(
+            token = token,
+            customerId = json.optString("customerId"),
+            productId = json.optString("productId"),
+            env = json.optString("env"),
+            tenantId = json.optString("tenantId").takeIf { it.isNotEmpty() },
+            firebaseConfig = parseFirebaseConfig(json.optJSONObject("firebaseConfig"))
+        )
+    }
+
+    /**
+     * Map the server's `firebaseConfig` object into an
+     * [ArgusConfiguration.FirebaseConfig]. Returns null when the field is
+     * absent (legacy server) or missing the identifiers Firebase init requires
+     * (`projectId` / `appId` / `apiKey`) — the caller then falls back to the
+     * [ArgusConfiguration.FirebaseConfig] defaults. The server names the app id
+     * `appId`; Firebase's [com.google.firebase.FirebaseOptions] calls it
+     * `applicationId`.
+     */
+    private fun parseFirebaseConfig(obj: JSONObject?): ArgusConfiguration.FirebaseConfig? {
+        if (obj == null) return null
+        val projectId = obj.optString("projectId").takeIf { it.isNotEmpty() } ?: return null
+        val appId = obj.optString("appId").takeIf { it.isNotEmpty() } ?: return null
+        val apiKey = obj.optString("apiKey").takeIf { it.isNotEmpty() } ?: return null
+        return ArgusConfiguration.FirebaseConfig(
+            projectId = projectId,
+            applicationId = appId,
+            apiKey = apiKey,
+            authDomain = obj.optString("authDomain").takeIf { it.isNotEmpty() },
+            storageBucket = obj.optString("storageBucket").takeIf { it.isNotEmpty() },
+            messagingSenderId = obj.optString("messagingSenderId").takeIf { it.isNotEmpty() },
+            useEmulator = obj.optBoolean("useEmulator", false)
+        )
+    }
+
+    private fun initFirebaseApp(fb: ArgusConfiguration.FirebaseConfig): FirebaseApp {
+        FirebaseApp.getApps(/* context */ requireContext()).forEach { existing ->
+            if (existing.name == FIREBASE_APP_NAME) return existing
+        }
+
+        // Note: `authDomain` is a web-Firebase concept with no Android
+        // `FirebaseOptions` equivalent — on Android, Auth resolves its domain
+        // from `projectId`. We carry it on the config for parity/diagnostics
+        // but only the Android-supported fields are applied here.
+        val options = FirebaseOptions.Builder()
+            .setProjectId(fb.projectId)
+            .setApplicationId(fb.applicationId)
+            .setApiKey(fb.apiKey)
+            .apply {
+                fb.storageBucket?.let { setStorageBucket(it) }
+                fb.messagingSenderId?.let { setGcmSenderId(it) }
+            }
+            .build()
+
+        val app = FirebaseApp.initializeApp(requireContext(), options, FIREBASE_APP_NAME)
+
+        if (fb.useEmulator) {
+            FirebaseAuth.getInstance(app)
+                .useEmulator(fb.emulatorHost, fb.authEmulatorPort)
+            FirebaseFirestore.getInstance(app).apply {
+                useEmulator(fb.emulatorHost, fb.firestoreEmulatorPort)
+                // Emulator: in-memory cache only, avoid stale on-disk state
+                // across harness runs.
+                firestoreSettings = FirebaseFirestoreSettings.Builder()
+                    .setLocalCacheSettings(memoryCacheSettings { })
+                    .build()
+            }
+        }
+        return app
+    }
+
+    /**
+     * Resolve a [android.content.Context] for Firebase init. The SDK does not
+     * hold a Context directly; it relies on the host app having already
+     * initialised the default [FirebaseApp] (the standard `firebase-bom`
+     * auto-init via the ContentProvider), whose context we borrow. If the host
+     * has no default app, real-time init fails and we fall back to HTTP.
+     */
+    private fun requireContext(): android.content.Context =
+        FirebaseApp.getInstance().applicationContext
+
+    private suspend fun attachListeners(db: FirebaseFirestore, bootstrap: StreamBootstrap) {
+        val env = configuration.environment
+        val tenantId = bootstrap.tenantId ?: configuration.tenantId.takeIf { it.isNotEmpty() }
+
+        // ── Conditions (scoped to this Product) ──────────────────────
+        val conditionsReg = db.collection("conditions")
+            .whereEqualTo("customerId", bootstrap.customerId)
+            .whereEqualTo("productId", bootstrap.productId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Timber.w(error, "Argus conditions listener error")
+                    return@addSnapshotListener
+                }
+                if (snapshot == null) return@addSnapshotListener
+                appCoroutineScope.launch {
+                    streamMutex.withLock {
+                        conditionDocs.clear()
+                        snapshot.documents.forEach { doc ->
+                            val data = doc.data ?: return@forEach
+                            val name = data["name"] as? String ?: return@forEach
+                            conditionDocs[name] = data
+                        }
+                    }
+                    recomputeAndPublish()
+                }
+            }
+
+        // ── Flags query (scoped to this Product) ─────────────────────
+        // On each flags snapshot we (re)bind a per-flag env listener and, when
+        // tenant-scoped, a per-flag tenant-override listener. The env/tenant
+        // listeners are what deliver live value changes between flag-doc
+        // changes; the flags query delivers archive/draft/default changes and
+        // add/remove of flags.
+        val flagsReg = db.collection("flags")
+            .whereEqualTo("customerId", bootstrap.customerId)
+            .whereEqualTo("productId", bootstrap.productId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Timber.w(error, "Argus flags listener error")
+                    return@addSnapshotListener
+                }
+                if (snapshot == null) return@addSnapshotListener
+                appCoroutineScope.launch {
+                    val currentIds = mutableSetOf<String>()
+                    streamMutex.withLock {
+                        snapshot.documents.forEach { doc ->
+                            val data = doc.data ?: return@forEach
+                            flagDocs[doc.id] = data
+                            currentIds.add(doc.id)
+                        }
+                        // Drop any flags no longer present.
+                        val removed = flagDocs.keys - currentIds
+                        removed.forEach { id ->
+                            flagDocs.remove(id)
+                            envDocs.remove(id)
+                            tenantDocs.remove(id)
+                        }
+                    }
+                    // Bind env + tenant listeners for the current flag set.
+                    snapshot.documents.forEach { doc ->
+                        bindEnvListener(db, doc.id, env)
+                        if (tenantId != null) {
+                            bindTenantListener(db, doc.id, env, tenantId)
+                        }
+                    }
+                    recomputeAndPublish()
+                }
+            }
+
+        streamMutex.withLock {
+            listenerRegistrations.add(conditionsReg)
+            listenerRegistrations.add(flagsReg)
+        }
+    }
+
+    // Tracks which flagIds already have env/tenant listeners so the flags
+    // listener does not stack duplicates on every snapshot.
+    private val boundEnvFlagIds = ConcurrentHashMap.newKeySet<String>()
+    private val boundTenantFlagIds = ConcurrentHashMap.newKeySet<String>()
+
+    private fun bindEnvListener(db: FirebaseFirestore, flagId: String, env: String) {
+        if (!boundEnvFlagIds.add(flagId)) return
+        val reg = db.collection("flags").document(flagId)
+            .collection("environments").document(env)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Timber.w(error, "Argus env listener error (%s)", flagId)
+                    return@addSnapshotListener
+                }
+                appCoroutineScope.launch {
+                    streamMutex.withLock {
+                        val data = snapshot?.data
+                        if (data != null) envDocs[flagId] = data else envDocs.remove(flagId)
+                    }
+                    recomputeAndPublish()
+                }
+            }
+        listenerRegistrations.add(reg)
+    }
+
+    private fun bindTenantListener(
+        db: FirebaseFirestore,
+        flagId: String,
+        env: String,
+        tenantId: String
+    ) {
+        if (!boundTenantFlagIds.add(flagId)) return
+        val reg = db.collection("flags").document(flagId)
+            .collection("environments").document(env)
+            .collection("tenants").document(tenantId)
+            .addSnapshotListener { snapshot, error ->
+                if (error != null) {
+                    Timber.w(error, "Argus tenant listener error (%s)", flagId)
+                    return@addSnapshotListener
+                }
+                appCoroutineScope.launch {
+                    streamMutex.withLock {
+                        val data = snapshot?.data
+                        if (data != null) tenantDocs[flagId] = data else tenantDocs.remove(flagId)
+                    }
+                    recomputeAndPublish()
+                }
+            }
+        listenerRegistrations.add(reg)
+    }
+
+    /** Re-resolve all flags from the latest snapshots and update the cache. */
+    private suspend fun recomputeAndPublish() {
+        val inputs: List<ArgusFlagResolver.FlagInput>
+        val conditions: Map<String, Map<String, Any?>>
+        streamMutex.withLock {
+            inputs = flagDocs.map { (flagId, flag) ->
+                ArgusFlagResolver.FlagInput(
+                    flag = flag,
+                    env = envDocs[flagId],
+                    tenant = tenantDocs[flagId]
+                )
+            }
+            conditions = HashMap(conditionDocs)
+        }
+
+        val resolved = ArgusFlagResolver.resolve(
+            flags = inputs,
+            conditionsByName = conditions,
+            context = ArgusFlagResolver.Context(
+                platform = "android",
+                version = appVersionName,
+                userId = configuration.userId.takeIf { it.isNotEmpty() }
+            )
+        )
+
+        resolved.forEach { (key, value) -> flagCache[key] = value }
+        _remoteConfigState.value = true
+    }
+
+    /**
+     * Detach all listeners and tear down the named Firebase app. Idempotent.
+     * Call when the SDK consumer no longer needs flag updates (e.g. sign-out).
+     */
+    fun close() {
+        appCoroutineScope.launch {
+            streamMutex.withLock {
+                listenerRegistrations.forEach { it.remove() }
+                listenerRegistrations.clear()
+                boundEnvFlagIds.clear()
+                boundTenantFlagIds.clear()
+                flagDocs.clear()
+                envDocs.clear()
+                tenantDocs.clear()
+                conditionDocs.clear()
+            }
+            runCatching { firebaseApp?.delete() }
+            firebaseApp = null
+            firestore = null
+        }
     }
 
     // ── Primitive Getters ───────────────────────────────────────────────
@@ -387,5 +778,11 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             if (p1 != p2) return p1.compareTo(p2)
         }
         return 0
+    }
+
+    private companion object {
+        // Named secondary Firebase app so the SDK never collides with the host
+        // app's default [FirebaseApp].
+        const val FIREBASE_APP_NAME = "argus-sdk"
     }
 }

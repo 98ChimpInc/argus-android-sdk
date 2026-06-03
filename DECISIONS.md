@@ -1,5 +1,67 @@
 # Decisions Log
 
+## 2026-06-02 — ⭐ CANONICAL: real-time push via Firestore listeners (supersedes the 2026-05-18 HTTP-poll pivot)
+
+> **AUTHORITATIVE / owner-approved (shahin@98chimp.com).** Canonical record:
+> argus-web-app/DECISIONS.md (2026-06-02, #215).
+
+**Decision**: `ArgusFeatureFlagServiceImpl` delivers flag changes via **Firestore real-time listeners** (snapshot `Flow` → `StateFlow`), not OkHttp polling. On start it trades its apiKey for a scoped Firebase custom token (`issueStreamToken` callable), signs in, and listens to its product's flag/env docs; changes push into the `StateFlow` in ~1s. Per-user/per-device targeting resolves locally via the SDK's existing `FNV1a` (rollout) + `compareVersion` (conditions). The `resolveFlags` OkHttp call + polling intervals are demoted to a **cold-start / fallback path only**.
+
+**This DIRECTLY SUPERSEDES the 2026-05-18 decision below** ("API-key auth, dropping the Firebase Auth dependency"), which moved the SDK to apiKey-only HTTP polling and removed Firebase/Firestore from the client — that pivot was made **without owner authorization** and silently dropped the real-time push capability. Firebase is re-added on the client (consumers use **Argus's** Firebase project via public config + a scoped custom token; they still need no Firebase project of their own). Do not reintroduce poll-only or SSE as the primary channel.
+
+**Reason / governance**: push-to-client is the core value proposition. No future pivot of the transport/auth/real-time model without explicit owner approval, recorded here as superseding.
+
+## 2026-06-02 — Real-time push implementation notes (#215)
+
+**Decision**: Implemented the canonical architecture above.
+- **`ArgusFlagResolver`** — a pure, dependency-free object holding the client-side
+  resolution algorithm, an exact mirror of server `resolveFlags`
+  (archived/draft skip → env-value-vs-default → tenant-override priority →
+  condition priority + version/platform matching → rollout bucketing via the
+  shared `FNV1a`). Extracted as a standalone unit so it is testable without a
+  live Firebase (15 focused tests, no backend). Snapshot payloads are passed in
+  as plain `Map`s so the listeners hand over decoded docs verbatim.
+- **`JsonCompat`** — serialises decoded `Map`/`List` flag values back to a JSON
+  string via `org.json`, so the cache string round-trips through the exact
+  parser the structured getters (`getFeatureData`) already use. Keeps both
+  channels byte-compatible downstream.
+- **Named secondary `FirebaseApp` (`"argus-sdk"`)** — never the host app's
+  default app. Context is borrowed from `FirebaseApp.getInstance()` (the host's
+  auto-initialised default); if the host has no Firebase at all, real-time init
+  throws and `initialize()` degrades to the HTTP fallback.
+- **Listener fan-out** — one query listener on `flags`, one on `conditions`, and
+  per-flag listeners on `environments/{env}` (+ `tenants/{tenantId}` when
+  tenant-scoped). The per-flag listeners deliver live value changes; the flags
+  query handles add/remove/archive/draft. Bound-once guards
+  (`CopyOnWriteArrayList` + concurrent sets) prevent duplicate registrations.
+- **`ArgusConfiguration.FirebaseConfig`** — optional, fully defaulted (Argus prod
+  placeholders + emulator host/ports). The `useEmulator` flag points the named
+  app at the Auth + Firestore emulators for harness / local dev parity.
+- **`close()`** — detaches listeners and deletes the named app (e.g. on sign-out).
+
+**Supporting build-state fixes (rode along, required to compile/test the branch):**
+- Fixed a pre-existing typo in `settings.gradle.kts`: `dependencyResolution`
+  → `dependencyResolutionManagement` (the block name was invalid and broke
+  every Gradle invocation on this branch).
+- Fixed pre-existing unit tests that constructed `ArgusConfiguration` /
+  `ArgusConfiguration.create` without the required `apiKey` argument (they
+  could not compile).
+- Added `org.json:json` as a `testImplementation`. The Android `android.jar`
+  stub throws "not mocked" for every `org.json` call; a real implementation on
+  the test classpath is required to exercise the JSON-parsing getters and the
+  resolver's value stringification (this un-broke 5 pre-existing tests too).
+
+**Reason**: keep the resolver pure + unit-testable (the listener path needs a
+device/emulator, the algorithm does not), and keep the dual-channel output
+identical so the demotion of `resolveFlags` to fallback is transparent to
+callers.
+
+**Alternatives considered**: collecting each listener as its own
+`callbackFlow` and `combine`-ing them into the `StateFlow` — rejected as more
+moving parts than maintaining the latest-snapshot maps + a single
+`recomputeAndPublish()`; the recompute is cheap (in-memory, per-Product flag
+counts are small) and the code is easier to reason about.
+
 ## 2026-05-25 — Auto-detect `environment` from host-app build context
 
 **Decision**: Make `environment` optional via a new `ArgusConfiguration.create(context, ...)` companion factory that defaults to an `autoDetectedEnvironment(context)` value. Detection priority: `ApplicationInfo.FLAG_DEBUGGABLE` → `"dev"`; reflective read of `<hostPackage>.BuildConfig.ARGUS_TRACK` → that value; else `"prod"`. The existing 5-arg `ArgusConfiguration(apiKey, baseURL, tenantId, environment, userId)` constructor is preserved untouched, so all existing call sites compile + behave identically.
@@ -24,7 +86,7 @@ can have disjoint apiKeys per app.
 
 **Alternatives considered**: None ... the SDK API is unaffected.
 
-## 2026-05-18 — API-key auth, dropping the Firebase Auth dependency
+## 2026-05-18 — API-key auth, dropping the Firebase Auth dependency  ⚠️ SUPERSEDED (see 2026-06-02 canonical entry above)
 
 **Decision**: Authenticate to the Argus `resolveFlags` endpoint with a per-Customer
 API key (`ArgusConfiguration.apiKey`, sent as `Authorization: Bearer <apiKey>`)
