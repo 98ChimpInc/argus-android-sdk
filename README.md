@@ -29,17 +29,23 @@ The SDK implements the `FeatureFlagService` interface. Every `@Inject FeatureFla
 
 `initialize()` brings up the real-time channel in four steps:
 
-1. **Bootstrap a scoped token.** The SDK `POST`s its Argus apiKey to
-   `{baseURL}/issueStreamToken` (`Authorization: Bearer <apiKey>`) and receives
-   `{ token, customerId, productId, env, tenantId }`. The `token` is a
-   short-lived Firebase **custom token** scoped, via claims, to exactly this
-   Product's flag/condition documents.
-2. **Init a named Firebase app.** The SDK initialises a *named* secondary
-   `FirebaseApp` (`"argus-sdk"`) so it never collides with the host app's
-   default `FirebaseApp`. It uses **Argus's** Firebase project (public config
-   shipped in the SDK) ... consumers never set up a Firebase project of their
-   own. When `ArgusConfiguration.FirebaseConfig.useEmulator` is set, the named
-   app's Auth + Firestore point at the local emulators instead.
+1. **Bootstrap a scoped token + Firebase config.** The SDK `POST`s its Argus
+   apiKey to `{baseURL}/issueStreamToken` (`Authorization: Bearer <apiKey>`) and
+   receives `{ token, customerId, productId, env, tenantId, firebaseConfig }`.
+   The `token` is a short-lived Firebase **custom token** scoped, via claims, to
+   exactly this Product's flag/condition documents. The `firebaseConfig` object
+   (`projectId`, `apiKey`, `appId`, `authDomain`, optional `storageBucket` /
+   `messagingSenderId`, `useEmulator`) tells the SDK which Firebase project to
+   connect to.
+2. **Init a named Firebase app — self-configured from the server.** The SDK
+   builds `FirebaseOptions` from the returned `firebaseConfig` and initialises a
+   *named* secondary `FirebaseApp` (`"argus-sdk"`) so it never collides with the
+   host app's default `FirebaseApp`. **The consumer passes only the Argus apiKey
+   (+ endpoint base URL) — no Firebase config of their own.** When the returned
+   `firebaseConfig.useEmulator` is `true`, the named app's Auth + Firestore point
+   at the local emulators (`127.0.0.1:9099`/`:8080` by default) instead of prod.
+   An explicit `ArgusConfiguration.firebase` override, if set, takes precedence
+   over the server-returned config (e.g. for a bespoke test harness).
 3. **Sign in** with `signInWithCustomToken(token)`.
 4. **Open snapshot listeners** on the Product's `flags` query, each
    `flags/{id}/environments/{env}` doc, the tenant-override doc when
@@ -67,7 +73,7 @@ its first snapshot, and it covers the case where Firebase init / sign-in fails
 
 - **`ArgusFeatureFlagServiceImpl`** ... the main service implementation. Runs the real-time listener (primary) + HTTP fallback, caches resolved values in a `ConcurrentHashMap`, and exposes them through the full `FeatureFlagService` interface.
 - **`ArgusFlagResolver`** ... pure, dependency-free client-side mirror of the server `resolveFlags` algorithm. Unit-tested without a live backend.
-- **`ArgusConfiguration`** ... data class holding the API key, endpoint URL, tenant ID, environment, user ID, and an optional `FirebaseConfig` (project id / app id / api key + emulator host/ports, all defaulted). Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
+- **`ArgusConfiguration`** ... data class holding the Argus API key, endpoint URL, tenant ID, environment, and user ID. Its `firebase: FirebaseConfig?` field is an **optional override** that defaults to `null` — leave it unset on the happy path and the SDK self-configures from the server-returned `firebaseConfig`. Use `ArgusConfiguration.create(context, ...)` to have `environment` auto-detected from the host app's build context (see [Environment auto-detection](#environment-auto-detection)).
 - **`FNV1a`** ... FNV-1a 32-bit hash for rollout bucketing. Produces identical output to the JavaScript reference in the Argus backend.
 - **`ArgusModule`** ... optional standalone Hilt module for use when the SDK is not wired through the host app's own Hilt graph.
 
@@ -328,10 +334,14 @@ keys themselves are env-scoped now.
 
 The SDK still authenticates to Argus with your Argus apiKey
 (`ArgusConfiguration.apiKey`). For the real-time channel it trades that key for
-a scoped Firebase custom token and connects to **Argus's own Firebase project**
-(public config bundled in the SDK) — **you do not create or configure a
-Firebase project of your own**; the host app's existing default `FirebaseApp`
-(if any) is left untouched, since the SDK runs on a separate named app.
+a scoped Firebase custom token **and the Firebase project config** (returned in
+the same `issueStreamToken` response), then connects to **Argus's own Firebase
+project** using that server-provided config — **you do not create or configure
+a Firebase project of your own, and you pass no Firebase config to the SDK**;
+the host app's existing default `FirebaseApp` (if any) is left untouched, since
+the SDK runs on a separate named app. The documented happy path is to construct
+`ArgusConfiguration` with just the Argus apiKey (+ base URL, tenant, user); the
+optional `firebase` override exists only for bespoke test harnesses.
 
 **apiKeys are per-Product *and per environment***, not per-Customer: a workspace
 with multiple Products has multiple triples of apiKeys (`argus_dev_*` /

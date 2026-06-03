@@ -40,6 +40,14 @@ import javax.inject.Singleton
  * [initialize] the SDK trades its Argus apiKey for a scoped Firebase custom
  * token (`issueStreamToken`), signs in to a *named* Firebase app, and opens
  * snapshot listeners on its own Product's flag/env/tenant/condition documents.
+ *
+ * **Self-configuring (no consumer Firebase config required).** The
+ * `issueStreamToken` response also carries a `firebaseConfig` object
+ * (`projectId` / `appId` / `apiKey` / `authDomain` / optional `storageBucket` /
+ * `messagingSenderId` / `useEmulator`). The SDK builds the named app's
+ * [FirebaseOptions] from that, so the consumer supplies only the Argus apiKey
+ * (+ endpoint base URL). An explicit [ArgusConfiguration.firebase] override, if
+ * set, takes precedence over the server-returned config.
  * Any change re-runs client-side resolution ([ArgusFlagResolver]) and pushes
  * the new values into the [isActive]-gated cache in ~1s — no polling.
  *
@@ -164,9 +172,12 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
 
     /**
      * Bootstrap the real-time push channel:
-     *  1. trade the apiKey for a scoped Firebase custom token (existing OkHttp);
-     *  2. init a *named* Firebase app (so we never clash with the host app's
-     *     default app), pointed at the emulator when configured;
+     *  1. trade the apiKey for a scoped Firebase custom token + the project's
+     *     `firebaseConfig` (existing OkHttp);
+     *  2. resolve the effective Firebase config (consumer override →
+     *     server-returned `firebaseConfig` → bundled defaults) and init a
+     *     *named* Firebase app (so we never clash with the host app's default
+     *     app), pointed at the emulator when the resolved config says so;
      *  3. sign in with the custom token;
      *  4. open snapshot listeners on the flags query + each env doc (+ tenant
      *     override doc when tenant-scoped) + conditions.
@@ -176,7 +187,14 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
     private suspend fun startRealtime() {
         val bootstrap = issueStreamToken()
 
-        val app = initFirebaseApp()
+        // Precedence: an explicit consumer override wins; otherwise self-
+        // configure from the server-returned `firebaseConfig`; otherwise fall
+        // back to the bundled defaults (legacy server with no firebaseConfig).
+        val effectiveFirebase = configuration.firebase
+            ?: bootstrap.firebaseConfig
+            ?: ArgusConfiguration.FirebaseConfig()
+
+        val app = initFirebaseApp(effectiveFirebase)
         firebaseApp = app
 
         val auth = FirebaseAuth.getInstance(app)
@@ -194,7 +212,12 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         val customerId: String,
         val productId: String,
         val env: String,
-        val tenantId: String?
+        val tenantId: String?,
+        // Self-configuration: the Firebase project the named app should connect
+        // to, as returned by the server. Null only on legacy servers that
+        // predate the `firebaseConfig` field — the SDK then falls back to the
+        // [ArgusConfiguration.FirebaseConfig] defaults.
+        val firebaseConfig: ArgusConfiguration.FirebaseConfig?
     )
 
     private suspend fun issueStreamToken(): StreamBootstrap {
@@ -221,20 +244,53 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             customerId = json.optString("customerId"),
             productId = json.optString("productId"),
             env = json.optString("env"),
-            tenantId = json.optString("tenantId").takeIf { it.isNotEmpty() }
+            tenantId = json.optString("tenantId").takeIf { it.isNotEmpty() },
+            firebaseConfig = parseFirebaseConfig(json.optJSONObject("firebaseConfig"))
         )
     }
 
-    private fun initFirebaseApp(): FirebaseApp {
+    /**
+     * Map the server's `firebaseConfig` object into an
+     * [ArgusConfiguration.FirebaseConfig]. Returns null when the field is
+     * absent (legacy server) or missing the identifiers Firebase init requires
+     * (`projectId` / `appId` / `apiKey`) — the caller then falls back to the
+     * [ArgusConfiguration.FirebaseConfig] defaults. The server names the app id
+     * `appId`; Firebase's [com.google.firebase.FirebaseOptions] calls it
+     * `applicationId`.
+     */
+    private fun parseFirebaseConfig(obj: JSONObject?): ArgusConfiguration.FirebaseConfig? {
+        if (obj == null) return null
+        val projectId = obj.optString("projectId").takeIf { it.isNotEmpty() } ?: return null
+        val appId = obj.optString("appId").takeIf { it.isNotEmpty() } ?: return null
+        val apiKey = obj.optString("apiKey").takeIf { it.isNotEmpty() } ?: return null
+        return ArgusConfiguration.FirebaseConfig(
+            projectId = projectId,
+            applicationId = appId,
+            apiKey = apiKey,
+            authDomain = obj.optString("authDomain").takeIf { it.isNotEmpty() },
+            storageBucket = obj.optString("storageBucket").takeIf { it.isNotEmpty() },
+            messagingSenderId = obj.optString("messagingSenderId").takeIf { it.isNotEmpty() },
+            useEmulator = obj.optBoolean("useEmulator", false)
+        )
+    }
+
+    private fun initFirebaseApp(fb: ArgusConfiguration.FirebaseConfig): FirebaseApp {
         FirebaseApp.getApps(/* context */ requireContext()).forEach { existing ->
             if (existing.name == FIREBASE_APP_NAME) return existing
         }
 
-        val fb = configuration.firebase
+        // Note: `authDomain` is a web-Firebase concept with no Android
+        // `FirebaseOptions` equivalent — on Android, Auth resolves its domain
+        // from `projectId`. We carry it on the config for parity/diagnostics
+        // but only the Android-supported fields are applied here.
         val options = FirebaseOptions.Builder()
             .setProjectId(fb.projectId)
             .setApplicationId(fb.applicationId)
             .setApiKey(fb.apiKey)
+            .apply {
+                fb.storageBucket?.let { setStorageBucket(it) }
+                fb.messagingSenderId?.let { setGcmSenderId(it) }
+            }
             .build()
 
         val app = FirebaseApp.initializeApp(requireContext(), options, FIREBASE_APP_NAME)

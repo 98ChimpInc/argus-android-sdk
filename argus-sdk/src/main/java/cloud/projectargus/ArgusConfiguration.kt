@@ -14,11 +14,14 @@ import android.content.pm.ApplicationInfo
  *   use [ArgusConfiguration.create] to derive it from the host app's build
  *   context via [autoDetectedEnvironment].
  * @property userId Stable user identifier for rollout bucketing.
- * @property firebase Firebase project + emulator settings used by the
- *   real-time push channel (#215). Optional: defaults to Argus's production
- *   Firebase project so a consumer normally supplies only the Argus [apiKey].
- *   Set [FirebaseConfig.useEmulator] (via the convergence harness / local dev)
- *   to point the listener at the Firestore + Auth emulators instead of prod.
+ * @property firebase Optional Firebase project + emulator OVERRIDE for the
+ *   real-time push channel (#215). **Leave `null` for the documented happy
+ *   path** — the SDK self-configures from the `firebaseConfig` object the
+ *   server returns on `issueStreamToken`, so the consumer supplies only the
+ *   Argus [apiKey] (+ [baseURL]). Set this only to force-override the
+ *   server-returned values (e.g. pinning a specific emulator host/port or
+ *   project in a bespoke test harness); when set, it wins over the server
+ *   config in full.
  */
 data class ArgusConfiguration(
     val apiKey: String,
@@ -26,23 +29,35 @@ data class ArgusConfiguration(
     val tenantId: String,
     val environment: String,
     val userId: String,
-    val firebase: FirebaseConfig = FirebaseConfig()
+    val firebase: FirebaseConfig? = null
 ) {
 
     /**
      * Firebase connection settings for the real-time push channel.
+     *
+     * On the happy path this is **derived from the `firebaseConfig` object the
+     * server returns on `issueStreamToken`** (see
+     * [ArgusFeatureFlagServiceImpl]) — the consumer does not build it. It is
+     * exposed publicly only so callers can supply [ArgusConfiguration.firebase]
+     * as an explicit override.
      *
      * The SDK initialises a *named* secondary [com.google.firebase.FirebaseApp]
      * from these values (never the host app's default app), trades the Argus
      * apiKey for a scoped custom token via `issueStreamToken`, signs in, and
      * opens Firestore snapshot listeners on its own Product's flag docs.
      *
-     * @property projectId Argus Firebase project id. Defaults to the Argus prod
-     *   project. Must match the project that minted the custom token.
+     * @property projectId Argus Firebase project id. Must match the project that
+     *   minted the custom token.
      * @property applicationId Firebase Android `applicationId` (a.k.a. mobilesdk
-     *   app id) for the Argus app registration. Placeholder for prod wiring.
+     *   app id / `appId`) for the Argus app registration.
      * @property apiKey Firebase Web/Android API key for the Argus project. This
      *   is the public Firebase config key (safe to ship) — NOT the Argus apiKey.
+     * @property authDomain Firebase Auth domain (`<project>.firebaseapp.com`).
+     *   Optional; informational on Android (Auth resolves from [projectId]).
+     * @property storageBucket Firebase Storage bucket. Optional; unused by the
+     *   listener channel, carried through for completeness.
+     * @property messagingSenderId FCM sender id. Optional; unused by the
+     *   listener channel, carried through for completeness.
      * @property useEmulator When true, the named app's Auth + Firestore point at
      *   the local emulator at [emulatorHost] / the given ports instead of prod.
      *   Used by the convergence harness and local dev for dev/prod parity.
@@ -55,6 +70,9 @@ data class ArgusConfiguration(
         val projectId: String = DEFAULT_PROJECT_ID,
         val applicationId: String = DEFAULT_APPLICATION_ID,
         val apiKey: String = DEFAULT_FIREBASE_API_KEY,
+        val authDomain: String? = null,
+        val storageBucket: String? = null,
+        val messagingSenderId: String? = null,
         val useEmulator: Boolean = false,
         val emulatorHost: String = DEFAULT_EMULATOR_HOST,
         val authEmulatorPort: Int = DEFAULT_AUTH_EMULATOR_PORT,
@@ -91,7 +109,7 @@ data class ArgusConfiguration(
             tenantId: String,
             userId: String,
             environment: String = autoDetectedEnvironment(context),
-            firebase: FirebaseConfig = FirebaseConfig()
+            firebase: FirebaseConfig? = null
         ): ArgusConfiguration = ArgusConfiguration(
             apiKey = apiKey,
             baseURL = baseURL,
@@ -150,12 +168,13 @@ data class ArgusConfiguration(
         internal const val ENV_PROD = "prod"
         private const val BUILD_CONFIG_FIELD = "ARGUS_TRACK"
 
-        // ── Firebase prod placeholders (#215) ───────────────────────
-        // Argus's production Firebase project. The apiKey here is the
-        // PUBLIC Firebase config key (ships in every Firebase client app
-        // and is safe to commit) — distinct from the secret Argus apiKey.
-        // Real prod values are wired in before GA; these placeholders let
-        // the SDK compile and run against the emulator today.
+        // ── Firebase fallback placeholders (#215) ───────────────────
+        // Only used when an explicit [FirebaseConfig] override is supplied
+        // without all fields set. On the happy path the SDK self-configures
+        // from the server-returned `firebaseConfig` and never reads these.
+        // The apiKey here is the PUBLIC Firebase config key (ships in every
+        // Firebase client app and is safe to commit) — distinct from the
+        // secret Argus apiKey.
         private const val DEFAULT_PROJECT_ID = "demo-argus"
         private const val DEFAULT_APPLICATION_ID = "1:000000000000:android:0000000000000000"
         private const val DEFAULT_FIREBASE_API_KEY = "AIzaSyArgusPlaceholderKey0000000000000000"
