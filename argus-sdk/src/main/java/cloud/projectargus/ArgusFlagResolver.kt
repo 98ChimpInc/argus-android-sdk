@@ -31,11 +31,17 @@ internal object ArgusFlagResolver {
         val tenant: Map<String, Any?>?
     )
 
-    /** The request context — platform/version/userId for targeting. */
+    /** The request context — platform/version/userId/language for targeting. */
     data class Context(
         val platform: String?,
         val version: String?,
-        val userId: String?
+        val userId: String?,
+        /**
+         * The client's BCP-47 language tag (e.g. `en-US`), or null when
+         * unavailable. Matched case-insensitively against a condition's
+         * `languageFilter` clause, mirroring the server + iOS.
+         */
+        val language: String?
     )
 
     /**
@@ -148,10 +154,11 @@ internal object ArgusFlagResolver {
      * Evaluate one condition against the context. All present clauses must
      * match (logical AND). Mirrors `functions/index.js#evaluateCondition`.
      *
-     * The client only has platform/version/userId, so audience + language
-     * clauses (which need data the client never sends) follow the server's
-     * conservative behaviour: an audience restriction cannot be satisfied
-     * client-side and therefore fails the match.
+     * The client has platform/version/userId/language. The language clause is
+     * evaluated client-side (lowercased exact-equality, mirroring the server +
+     * iOS). The audience clause still needs membership data the client never
+     * sends, so it follows the server's conservative behaviour: an audience
+     * restriction cannot be satisfied client-side and therefore fails the match.
      */
     private fun evaluateCondition(condition: Map<String, Any?>, context: Context): Boolean {
         // Platform check.
@@ -187,9 +194,16 @@ internal object ArgusFlagResolver {
         val audienceIds = condition["audienceIds"] as? List<*>
         if (audienceIds != null && audienceIds.isNotEmpty()) return false
 
-        // Language filter: client does not send a language → cannot satisfy.
+        // Language filter: lowercased exact-equality against the client's
+        // language tag, mirroring the server + iOS. A non-empty filter with no
+        // client language (or no match) fails the clause.
         val languageFilter = condition["languageFilter"] as? List<*>
-        if (languageFilter != null && languageFilter.isNotEmpty()) return false
+        if (languageFilter != null && languageFilter.isNotEmpty()) {
+            val language = context.language ?: return false
+            val clientLang = language.lowercase()
+            val matches = languageFilter.any { (it as? String)?.lowercase() == clientLang }
+            if (!matches) return false
+        }
 
         return true
     }

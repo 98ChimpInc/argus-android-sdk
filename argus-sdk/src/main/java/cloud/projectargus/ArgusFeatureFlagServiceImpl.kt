@@ -26,6 +26,7 @@ import org.json.JSONObject
 import timber.log.Timber
 import java.io.IOException
 import java.net.URLEncoder
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
@@ -140,6 +141,8 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             append("&userId=").append(URLEncoder.encode(configuration.userId, "UTF-8"))
             append("&tenantId=").append(URLEncoder.encode(configuration.tenantId, "UTF-8"))
             append("&env=").append(URLEncoder.encode(configuration.environment, "UTF-8"))
+            append("&language=")
+                .append(URLEncoder.encode(Locale.getDefault().toLanguageTag(), "UTF-8"))
         }
 
         val request = Request.Builder()
@@ -470,7 +473,9 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             context = ArgusFlagResolver.Context(
                 platform = "android",
                 version = appVersionName,
-                userId = configuration.userId.takeIf { it.isNotEmpty() }
+                userId = configuration.userId.takeIf { it.isNotEmpty() },
+                // BCP-47 tag (e.g. "en-US"), mirrors iOS Locale.preferredLanguages.first.
+                language = Locale.getDefault().toLanguageTag()
             )
         )
 
