@@ -17,7 +17,8 @@ class ArgusFlagResolverTest {
     private val androidCtx = ArgusFlagResolver.Context(
         platform = "android",
         version = "1.42.0",
-        userId = "user-123"
+        userId = "user-123",
+        language = null
     )
 
     private fun flag(input: ArgusFlagResolver.FlagInput) =
@@ -216,9 +217,58 @@ class ArgusFlagResolverTest {
             ),
             conditionsByName = conditions,
             // version null → conditionalValues not evaluated
-            context = ArgusFlagResolver.Context("android", null, "u")
+            context = ArgusFlagResolver.Context("android", null, "u", null)
         )
         assertEquals("env", result["f"])
+    }
+
+    // ── language filter (lowercased exact-equality, server + iOS parity) ─
+
+    private fun languageCondition() = mapOf(
+        "en_only" to mapOf<String, Any?>(
+            "name" to "en_only",
+            "priority" to 1,
+            "languageFilter" to listOf("en-US")
+        )
+    )
+
+    private fun resolveWithLanguage(language: String?): Map<String, String> =
+        ArgusFlagResolver.resolve(
+            flags = listOf(
+                ArgusFlagResolver.FlagInput(
+                    flag = mapOf("name" to "f", "defaultValue" to "base"),
+                    env = mapOf(
+                        "value" to "env",
+                        "conditionalValues" to mapOf("en_only" to "gated")
+                    ),
+                    tenant = null
+                )
+            ),
+            conditionsByName = languageCondition(),
+            context = ArgusFlagResolver.Context("android", "1.42.0", "user-123", language)
+        )
+
+    @Test
+    fun `language filter matches exact tag`() {
+        assertEquals("gated", resolveWithLanguage("en-US")["f"])
+    }
+
+    @Test
+    fun `language filter matches case-insensitively`() {
+        // Client "EN-us" lowercases to match filter "en-US".
+        assertEquals("gated", resolveWithLanguage("EN-us")["f"])
+    }
+
+    @Test
+    fun `language filter does not match different language`() {
+        // "fr-FR" is not in the filter → condition fails → env value stands.
+        assertEquals("env", resolveWithLanguage("fr-FR")["f"])
+    }
+
+    @Test
+    fun `language filter fails when context language is null`() {
+        // No client language → non-empty filter cannot be satisfied → env value.
+        assertEquals("env", resolveWithLanguage(null)["f"])
     }
 
     // ── rollout ─────────────────────────────────────────────────────────
