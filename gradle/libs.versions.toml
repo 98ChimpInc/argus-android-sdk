@@ -6,12 +6,13 @@ moshi = "1.15.0"
 okhttp = "4.12.0"
 coroutines = "1.7.3"
 timber = "5.0.1"
-# Firebase Android BoM. Kept current (latest at time of release) rather than
-# stale: declared via `implementation(platform(...))`, so a consuming app on a
-# newer BoM wins by Gradle's highest-version resolution (no SPM-style hard cap,
-# cf. the iOS dep in argus-web-app#272). Standalone consumers get a modern
-# Firebase. Bump this on each SDK release.
-firebase-bom = "34.14.1"
+# NOTE: BoM is intentionally NOT bumped to 34.x yet. BoM 34 ships Firebase
+# artifacts compiled with Kotlin 2.x metadata + drops the -ktx artifacts, which
+# requires a full toolchain modernization here (Kotlin 1.9 -> 2.x, AGP, Hilt/
+# KSP). Tracked separately. This SDK declares Firebase via implementation(
+# platform(bom)), so a consuming app on a newer BoM already wins by Gradle's
+# highest-version resolution — this pin does NOT cap consumers.
+firebase-bom = "32.7.1"
 junit = "4.13.2"
 mockk = "1.13.9"
 turbine = "1.0.0"
