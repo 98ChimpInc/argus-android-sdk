@@ -328,7 +328,7 @@ keys themselves are env-scoped now.
 | `hilt-android` | `@Inject` / `@Singleton` annotations |
 | `moshi` + `moshi-kotlin` | JSON deserialisation matching existing app pattern |
 | `okhttp` | HTTP client for the `issueStreamToken` bootstrap + `resolveFlags` fallback fetch |
-| `firebase-bom` + `firebase-auth-ktx` + `firebase-firestore-ktx` | Real-time push primary channel (#215): scoped sign-in + Firestore snapshot listeners |
+| `firebase-bom` + `firebase-auth` + `firebase-firestore` | Real-time push primary channel (#215): scoped sign-in + Firestore snapshot listeners. BoM 33+ merged the Kotlin extensions into the main modules, so the `-ktx` artifacts are no longer used. |
 | `kotlinx-coroutines-*` (incl. `play-services`) | Async bootstrap, `StateFlow`, and `Task.await()` for `signInWithCustomToken` |
 | `timber` | Logging matching existing app pattern |
 
