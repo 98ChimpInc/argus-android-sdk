@@ -1,7 +1,7 @@
 plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
-    alias(libs.plugins.kotlin.kapt)
+    alias(libs.plugins.ksp)
     alias(libs.plugins.hilt.android)
 }
 
@@ -27,7 +27,7 @@ android {
 dependencies {
     // Hilt
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
 
     // JSON
     implementation(libs.moshi)
@@ -40,8 +40,8 @@ dependencies {
     // BoM pins compatible Auth + Firestore versions; consumers use Argus's
     // Firebase project via a scoped custom token, never their own project.
     implementation(platform(libs.firebase.bom))
-    implementation(libs.firebase.auth.ktx)
-    implementation(libs.firebase.firestore.ktx)
+    implementation(libs.firebase.auth)
+    implementation(libs.firebase.firestore)
 
     // Coroutines
     implementation(libs.kotlinx.coroutines.core)

@@ -1,5 +1,44 @@
 # Decisions Log
 
+## 2026-06-09 — Modernize build toolchain to Kotlin 2.x + KSP + Firebase BoM 34 (#19)
+
+**Decision**: Moved the SDK off its outdated toolchain so the current Firebase
+BoM is usable:
+- Kotlin `1.9.22` → `2.0.21` (K2 compiler).
+- AGP `8.2.2` → `8.7.3`; Gradle wrapper `8.10` → `8.11.1`.
+- Hilt `2.50` → `2.52`, migrated its annotation processor from **KAPT → KSP**
+  (`kapt(libs.hilt.compiler)` → `ksp(libs.hilt.compiler)`, new
+  `com.google.devtools.ksp` plugin pinned to `2.0.21-1.0.28`). KAPT is fully
+  removed.
+- coroutines `1.7.3` → `1.9.0`; Moshi `1.15.0` → `1.15.1`.
+- Firebase BoM `32.7.1` → `34.4.0`, dropping the `-ktx` artifacts:
+  `firebase-auth-ktx` → `firebase-auth`, `firebase-firestore-ktx` →
+  `firebase-firestore`. BoM 33+ merged the Kotlin extensions into the main
+  modules, so the `memoryCacheSettings { }` DSL import
+  (`com.google.firebase.firestore.memoryCacheSettings`) is unchanged.
+
+**Reason**: BoM 34 ships Firebase artifacts compiled with Kotlin 2.x metadata
+and no longer publishes `-ktx` artifacts, so it cannot be consumed from a
+Kotlin 1.9 + KAPT toolchain. A prior BoM-34 bump (PR #17) was reverted (#18)
+precisely because the toolchain underneath wasn't modernized first; this change
+fixes the root cause. KSP is the supported processor on Kotlin 2.x (KAPT runs in
+a slower 1.9-compat mode and is deprecated for new work).
+
+**Moshi note**: `@JsonClass(generateAdapter = true)` annotations remain, but the
+SDK provides its `Moshi` instance via host-app DI with the reflective
+`moshi-kotlin` adapter — no Moshi codegen processor was wired through KAPT, so no
+Moshi KSP processor is needed. Only Hilt required the KAPT → KSP migration.
+
+**Distribution**: the SDK is consumed via `implementation(project(":argus-sdk"))`
+and released by git tag (currently `v1.0.2`); there is no `maven-publish` block
+or in-source version constant to bump. The recommended next tag is `v1.0.3` —
+left for the human to cut (not created here).
+
+**Alternatives considered**: Kotlin 2.1.x — held at 2.0.21 to stay on the
+Hilt-2.52 / KSP `2.0.21-1.0.28` combination that is known-good together. Staying
+on KAPT — rejected; KAPT is deprecated on K2 and the migration is mechanical
+here (single Hilt processor).
+
 ## 2026-06-02 — ⭐ CANONICAL: real-time push via Firestore listeners (supersedes the 2026-05-18 HTTP-poll pivot)
 
 > **AUTHORITATIVE / owner-approved (shahin@98chimp.com).** Canonical record:
