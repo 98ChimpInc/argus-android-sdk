@@ -62,6 +62,32 @@ the same value whether it arrives via the listener or the HTTP fallback.
 Call `ArgusFeatureFlagServiceImpl.close()` to detach the listeners and tear down
 the named Firebase app (e.g. on sign-out).
 
+### Reacting to live updates: `configUpdated`
+
+Every refresh that publishes resolved values — a live snapshot re-resolution or
+the cold-start HTTP fetch — also emits on
+`configUpdated: SharedFlow<Set<String>?>` (the Android mirror of the iOS SDK's
+`configUpdatedPublisher`):
+
+- `null` = full refresh (cold-start fetch, first live snapshot) ... treat every
+  flag as potentially changed;
+- a non-empty `Set<String>` = exactly the keys whose resolved value changed;
+- no emission when a re-resolution changes nothing. Once the stream is live,
+  the HTTP fallback stops emitting (the stream is authoritative).
+
+It is an event stream (no replay): collect it for *updates*, and gate the first
+read on `isActive`.
+
+```kotlin
+scope.launch {
+    argusFlags.configUpdated.collect { changedKeys ->
+        if (changedKeys == null || "flag_new_checkout" in changedKeys) {
+            render(argusFlags.getBoolean("flag_new_checkout"))
+        }
+    }
+}
+```
+
 ### Fallback channel: `resolveFlags` HTTP
 
 The `GET {baseURL}/resolveFlags` fetch is **demoted to cold-start / fallback
@@ -284,7 +310,6 @@ Then wire one service instance per Product:
 val webAppFlags = ArgusFeatureFlagServiceImpl(
     appVersionName = "1.0.0",
     appCoroutineScope = scope,
-    moshi = moshi,
     configuration = ArgusConfiguration.create(
         context = appContext,
         apiKey = BuildConfig.ARGUS_KEY_WEB,     // argus_<env>_* per build target
@@ -298,7 +323,6 @@ val webAppFlags = ArgusFeatureFlagServiceImpl(
 val mobileAppFlags = ArgusFeatureFlagServiceImpl(
     appVersionName = "1.0.0",
     appCoroutineScope = scope,
-    moshi = moshi,
     configuration = ArgusConfiguration.create(
         context = appContext,
         apiKey = BuildConfig.ARGUS_KEY_MOBILE,  // argus_<env>_* per build target
@@ -308,6 +332,12 @@ val mobileAppFlags = ArgusFeatureFlagServiceImpl(
     )
 )
 ```
+
+The examples above use the convenience constructor, which builds its own
+reflection-based `Moshi` internally. Apps with their own Moshi setup (custom
+adapters, codegen) can pass it via the primary constructor's `moshi` parameter
+... the type resolves without re-declaring the dependency, since the SDK
+exposes moshi as `api`.
 
 Each instance maintains its own flag cache and `StateFlow`. Wire each one
 into Hilt under a distinct qualifier (e.g. `@Named("webApp")`,
@@ -326,7 +356,7 @@ keys themselves are env-scoped now.
 | Dependency | Reason |
 |---|---|
 | `hilt-android` | `@Inject` / `@Singleton` annotations |
-| `moshi` + `moshi-kotlin` | JSON deserialisation matching existing app pattern |
+| `moshi` (`api`) + `moshi-kotlin` | JSON deserialisation matching existing app pattern. `moshi` is `api` because the primary constructor takes a `Moshi` parameter; the convenience constructor builds its own, so most consumers never touch it. |
 | `okhttp` | HTTP client for the `issueStreamToken` bootstrap + `resolveFlags` fallback fetch |
 | `firebase-bom` + `firebase-auth` + `firebase-firestore` | Real-time push primary channel (#215): scoped sign-in + Firestore snapshot listeners. BoM 33+ merged the Kotlin extensions into the main modules, so the `-ktx` artifacts are no longer used. |
 | `kotlinx-coroutines-*` (incl. `play-services`) | Async bootstrap, `StateFlow`, and `Task.await()` for `signInWithCustomToken` |

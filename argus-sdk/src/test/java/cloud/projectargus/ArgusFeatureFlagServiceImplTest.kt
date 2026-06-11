@@ -1,8 +1,13 @@
 package cloud.projectargus
 
+import app.cash.turbine.test
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runTest
+import okhttp3.mockwebserver.MockResponse
+import okhttp3.mockwebserver.MockWebServer
 import org.json.JSONArray
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -324,6 +329,152 @@ class ArgusFeatureFlagServiceImplTest {
         assertTrue(service.isTwhSupported())
         @Suppress("DEPRECATION")
         assertFalse(service.isSupportEnabled())
+    }
+
+    // ── configUpdated (#21) ─────────────────────────────────────────────
+
+    @Test
+    fun `configUpdated emits null full refresh on first fetch publish`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(setOf("a", "b"), fromStream = false)
+            assertNull(awaitItem())
+        }
+    }
+
+    @Test
+    fun `configUpdated emits changed keys on subsequent fetch publishes`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(setOf("a"), fromStream = false)
+            assertNull(awaitItem())
+            service.publishConfigUpdate(setOf("b", "c"), fromStream = false)
+            assertEquals(setOf("b", "c"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `configUpdated skips emission when fetch publish changes nothing`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(setOf("a"), fromStream = false)
+            assertNull(awaitItem())
+            service.publishConfigUpdate(emptySet(), fromStream = false)
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `first stream publish is always a full refresh`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(emptySet(), fromStream = true)
+            assertNull(awaitItem())
+        }
+    }
+
+    @Test
+    fun `first live snapshot is full refresh even after cold-start fetch emitted`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(setOf("a"), fromStream = false)
+            assertNull(awaitItem())
+            service.publishConfigUpdate(setOf("a"), fromStream = true)
+            assertNull(awaitItem())
+        }
+    }
+
+    @Test
+    fun `stream publishes after the first emit changed keys or nothing`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(emptySet(), fromStream = true)
+            assertNull(awaitItem())
+            service.publishConfigUpdate(emptySet(), fromStream = true)
+            expectNoEvents()
+            service.publishConfigUpdate(setOf("x"), fromStream = true)
+            assertEquals(setOf("x"), awaitItem())
+        }
+    }
+
+    @Test
+    fun `http fallback stops emitting once stream is live`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(emptySet(), fromStream = true)
+            assertNull(awaitItem())
+            service.publishConfigUpdate(setOf("a"), fromStream = false)
+            expectNoEvents()
+        }
+    }
+
+    @Test
+    fun `close resets emission state so re-initialize full-refreshes again`() = runTest {
+        service.configUpdated.test {
+            service.publishConfigUpdate(setOf("a"), fromStream = true)
+            assertNull(awaitItem())
+            service.close()
+            service.publishConfigUpdate(setOf("a"), fromStream = false)
+            assertNull(awaitItem())
+        }
+    }
+
+    // ── applyResolvedValues (#21) ───────────────────────────────────────
+
+    @Test
+    fun `applyResolvedValues returns only keys whose value changed`() {
+        flagCache["unchanged"] = "same"
+        flagCache["changed"] = "old"
+
+        val changed = service.applyResolvedValues(
+            mapOf("unchanged" to "same", "changed" to "new", "added" to "fresh")
+        )
+
+        assertEquals(setOf("changed", "added"), changed)
+        assertEquals("same", service.getString("unchanged"))
+        assertEquals("new", service.getString("changed"))
+        assertEquals("fresh", service.getString("added"))
+    }
+
+    @Test
+    fun `applyResolvedValues returns empty set when nothing changed`() {
+        flagCache["key"] = "value"
+        assertTrue(service.applyResolvedValues(mapOf("key" to "value")).isEmpty())
+    }
+
+    // ── initialize (cold-start fetch, end-to-end via MockWebServer) ─────
+
+    @Test
+    fun `initialize emits full refresh and activates after cold-start fetch`() {
+        val server = MockWebServer()
+        // resolveFlags response for the cold-start fetch, then a 500 for
+        // issueStreamToken so the real-time bootstrap fails fast and the
+        // service stays on the HTTP-fetched values.
+        server.enqueue(MockResponse().setBody("""{"flags":{"my_flag":"true"}}"""))
+        server.enqueue(MockResponse().setResponseCode(500))
+        server.start()
+
+        try {
+            // Exercises the convenience constructor (no Moshi parameter).
+            val service = ArgusFeatureFlagServiceImpl(
+                appVersionName = "1.42.0",
+                appCoroutineScope = kotlinx.coroutines.CoroutineScope(
+                    kotlinx.coroutines.Dispatchers.Unconfined
+                ),
+                configuration = ArgusConfiguration(
+                    apiKey = "argus_prod_test_key",
+                    baseURL = server.url("/").toString().trimEnd('/'),
+                    tenantId = "acme_corp",
+                    environment = "prod",
+                    userId = "test-user-123"
+                )
+            )
+
+            runBlocking {
+                service.configUpdated.test {
+                    service.initialize()
+                    assertNull(awaitItem())
+                }
+            }
+
+            assertTrue(service.isActive.value)
+            assertTrue(service.getBoolean("my_flag"))
+        } finally {
+            server.shutdown()
+        }
     }
 
     // ── Offline Fallback ────────────────────────────────────────────────

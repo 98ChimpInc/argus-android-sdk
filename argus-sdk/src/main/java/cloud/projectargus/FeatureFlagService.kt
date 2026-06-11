@@ -1,5 +1,6 @@
 package cloud.projectargus
 
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 
 /**
@@ -11,6 +12,19 @@ import kotlinx.coroutines.flow.StateFlow
 interface FeatureFlagService {
     fun initialize()
     val isActive: StateFlow<Boolean>
+
+    /**
+     * Emits after each refresh that publishes resolved flag values, mirroring
+     * the iOS SDK's `configUpdatedPublisher`:
+     *  - `null` on a full refresh (the cold-start HTTP fetch and the first
+     *    live snapshot) — treat every flag as potentially changed;
+     *  - the set of keys whose resolved value changed on subsequent updates;
+     *  - nothing when a re-resolution changes no values.
+     *
+     * Event-stream semantics (no replay): collectors only see updates that
+     * arrive after they subscribe. Use [isActive] to gate the first read.
+     */
+    val configUpdated: SharedFlow<Set<String>?>
     fun getString(key: String): String
     fun getBoolean(key: String): Boolean
     fun getLong(featureFlag: FeatureFlag): Long

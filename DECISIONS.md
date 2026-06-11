@@ -1,5 +1,39 @@
 # Decisions Log
 
+## 2026-06-11 — `configUpdated` per-update signal, iOS-parity semantics (#21)
+
+**Decision**: Added `configUpdated: SharedFlow<Set<String>?>` to
+`FeatureFlagService` / `ArgusFeatureFlagServiceImpl`, mirroring the iOS SDK's
+`configUpdatedPublisher` (`PassthroughSubject<Set<String>?, Never>`) exactly:
+
+- `null` = full refresh: emitted on the cold-start HTTP fetch and *always* on
+  the first live snapshot (the stream re-resolves everything, so the diff vs.
+  the fetched values is not meaningful).
+- Non-empty `Set<String>` = exactly the keys whose resolved value changed,
+  computed by `applyResolvedValues` (shared by both channels — DRY).
+- No emission when a re-resolution changes nothing.
+- Once the stream is live the HTTP fallback is muted, so the two channels
+  never fight over the published cache (same `streamIsLive` rule as iOS).
+
+Shape: `MutableSharedFlow` with **no replay** (event semantics, like
+`PassthroughSubject`) and a 64-slot `DROP_OLDEST` buffer so `tryEmit` from
+listener callbacks never suspends or fails. Consumers gate the *first* read on
+`isActive` and collect `configUpdated` for updates.
+
+**Why**: consumers previously had only the one-way `isActive` latch — live
+flag flips updated the internal cache but gave UI nothing to react to (DK
+Derby worked around it by re-reading at call sites).
+
+**Folded in (moshi ergonomics)**: `moshi` was an `implementation` dependency
+while the public primary constructor takes a `Moshi` parameter, so consumers
+could not construct the service without re-declaring moshi themselves. Fixed
+both ways: `moshi` is now `api(...)`, and a convenience constructor builds its
+own reflection-based `Moshi` (`KotlinJsonAdapterFactory`, the same
+configuration the SDK's tests use — the renderer types parse via reflection
+despite their `@JsonClass(generateAdapter = true)` annotations because the
+codegen processor was never wired, and the reflection factory is registered
+ahead of the built-in lookup). `moshi-kotlin` stays `implementation`.
+
 ## 2026-06-09 — Modernize build toolchain to Kotlin 2.x + KSP + Firebase BoM 34 (#19)
 
 **Decision**: Moved the SDK off its outdated toolchain so the current Firebase

@@ -8,10 +8,15 @@ import com.google.firebase.firestore.FirebaseFirestoreSettings
 import com.google.firebase.firestore.ListenerRegistration
 import com.google.firebase.firestore.memoryCacheSettings
 import com.squareup.moshi.Moshi
+import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -29,6 +34,7 @@ import java.net.URLEncoder
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -49,8 +55,9 @@ import javax.inject.Singleton
  * [FirebaseOptions] from that, so the consumer supplies only the Argus apiKey
  * (+ endpoint base URL). An explicit [ArgusConfiguration.firebase] override, if
  * set, takes precedence over the server-returned config.
- * Any change re-runs client-side resolution ([ArgusFlagResolver]) and pushes
- * the new values into the [isActive]-gated cache in ~1s — no polling.
+ * Any change re-runs client-side resolution ([ArgusFlagResolver]), pushes
+ * the new values into the [isActive]-gated cache in ~1s — no polling — and
+ * signals consumers via [configUpdated] (#21).
  *
  * **Fallback channel: the `resolveFlags` HTTP fetch.** Used (a) for first paint
  * before the listener delivers its first snapshot, and (b) as a graceful
@@ -67,8 +74,39 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
     private val configuration: ArgusConfiguration
 ) : FeatureFlagService {
 
+    /**
+     * Convenience constructor for consumers without their own Moshi setup.
+     * Builds a reflection-based Moshi (same configuration the SDK's own tests
+     * use), so the host app never has to declare a moshi dependency just to
+     * construct the service.
+     */
+    constructor(
+        appVersionName: String,
+        appCoroutineScope: CoroutineScope,
+        configuration: ArgusConfiguration
+    ) : this(
+        appVersionName = appVersionName,
+        appCoroutineScope = appCoroutineScope,
+        moshi = Moshi.Builder().addLast(KotlinJsonAdapterFactory()).build(),
+        configuration = configuration
+    )
+
     private val _remoteConfigState = MutableStateFlow(false)
     override val isActive: StateFlow<Boolean> = _remoteConfigState.asStateFlow()
+
+    // Event stream, not state: no replay, small buffer so [MutableSharedFlow.tryEmit]
+    // from listener callbacks never suspends or fails (#21).
+    private val _configUpdated = MutableSharedFlow<Set<String>?>(
+        extraBufferCapacity = CONFIG_UPDATED_BUFFER,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    override val configUpdated: SharedFlow<Set<String>?> = _configUpdated.asSharedFlow()
+
+    // Emission-rule state (#21), mirroring iOS: the first publish from each
+    // channel is a full refresh (`null`); once the stream is live the HTTP
+    // fallback stops emitting so the two channels never fight.
+    private val initialFetchEmitted = AtomicBoolean(false)
+    private val streamLive = AtomicBoolean(false)
 
     private val flagCache = ConcurrentHashMap<String, String>()
 
@@ -164,11 +202,13 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
 
         val json = JSONObject(body)
         val flags = json.getJSONObject("flags")
-        flags.keys().forEach { key ->
-            flagCache[key] = flags.get(key).toString()
+        val resolved = buildMap {
+            flags.keys().forEach { key -> put(key, flags.get(key).toString()) }
         }
+        val changedKeys = applyResolvedValues(resolved)
 
         _remoteConfigState.value = true
+        publishConfigUpdate(changedKeys, fromStream = false)
     }
 
     // ── Primary channel: real-time Firestore listeners (#215) ───────────
@@ -479,8 +519,56 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             )
         )
 
-        resolved.forEach { (key, value) -> flagCache[key] = value }
+        val changedKeys = applyResolvedValues(resolved)
         _remoteConfigState.value = true
+        publishConfigUpdate(changedKeys, fromStream = true)
+    }
+
+    /**
+     * Write [resolved] values into the cache and return the keys whose cached
+     * value actually changed. Internal for direct test access.
+     */
+    internal fun applyResolvedValues(resolved: Map<String, String>): Set<String> {
+        val changedKeys = mutableSetOf<String>()
+        resolved.forEach { (key, value) ->
+            if (flagCache.put(key, value) != value) changedKeys.add(key)
+        }
+        return changedKeys
+    }
+
+    /**
+     * Emission rules for [configUpdated], mirroring the iOS SDK's
+     * `configUpdatedPublisher` (#21):
+     *  - the first publish — from either channel — is a full refresh (`null`);
+     *  - the first live snapshot is *always* a full refresh, even when the
+     *    cold-start fetch already emitted (the stream re-resolves everything);
+     *  - later publishes emit the changed keys, or nothing when no value
+     *    changed;
+     *  - once the stream is live, the HTTP fallback stops emitting — the
+     *    stream is authoritative and the channels must never fight.
+     *
+     * Synchronized so a concurrent cold-start fetch and first snapshot can't
+     * both observe pre-first-publish state and double-emit the full refresh
+     * (mirrors iOS's `streamStateLock`). Internal for direct test access.
+     */
+    @Synchronized
+    internal fun publishConfigUpdate(changedKeys: Set<String>, fromStream: Boolean) {
+        if (fromStream) {
+            if (streamLive.compareAndSet(false, true)) {
+                // First live snapshot — treat as a full refresh.
+                initialFetchEmitted.set(true)
+                _configUpdated.tryEmit(null)
+            } else if (changedKeys.isNotEmpty()) {
+                _configUpdated.tryEmit(changedKeys)
+            }
+            return
+        }
+        if (streamLive.get()) return
+        if (initialFetchEmitted.compareAndSet(false, true)) {
+            _configUpdated.tryEmit(null)
+        } else if (changedKeys.isNotEmpty()) {
+            _configUpdated.tryEmit(changedKeys)
+        }
     }
 
     /**
@@ -488,6 +576,10 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
      * Call when the SDK consumer no longer needs flag updates (e.g. sign-out).
      */
     fun close() {
+        // Reset emission state synchronously so a follow-up initialize()
+        // starts a fresh full-refresh cycle on [configUpdated] (#21).
+        streamLive.set(false)
+        initialFetchEmitted.set(false)
         appCoroutineScope.launch {
             streamMutex.withLock {
                 listenerRegistrations.forEach { it.remove() }
@@ -792,5 +884,10 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         // Named secondary Firebase app so the SDK never collides with the host
         // app's default [FirebaseApp].
         const val FIREBASE_APP_NAME = "argus-sdk"
+
+        // Headroom for [configUpdated] emissions between collector resumptions;
+        // overflow drops the oldest event (collectors should re-read on any
+        // signal, so a dropped intermediate diff is harmless).
+        const val CONFIG_UPDATED_BUFFER = 64
     }
 }

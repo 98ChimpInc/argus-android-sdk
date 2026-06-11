@@ -29,8 +29,12 @@ dependencies {
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 
-    // JSON
-    implementation(libs.moshi)
+    // JSON. Moshi is `api` because ArgusFeatureFlagServiceImpl's primary
+    // constructor takes a Moshi parameter — consumers must be able to resolve
+    // the type without re-declaring the dependency themselves (#21).
+    // moshi-kotlin stays internal: the convenience constructor builds its own
+    // reflection-based Moshi.
+    api(libs.moshi)
     implementation(libs.moshi.kotlin)
 
     // HTTP (cold-start / fallback resolveFlags fetch)
