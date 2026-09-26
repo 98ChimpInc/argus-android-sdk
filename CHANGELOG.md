@@ -5,6 +5,12 @@ All notable changes to the Argus Android SDK are documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 This project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.1.1] - 2026-09-26
+
+### Fixed
+
+- The first real-time stream emission no longer resolves flags to their default values before the per-flag environment documents arrive. The SDK now holds the first consolidated publish until the flags snapshot has arrived and every flag's environment listener — and, for tenant-scoped API keys, its tenant-override listener — has delivered at least once. Until then the cache keeps the HTTP cold-start answer (or bundled defaults if that fetch failed) and `isActive` is not raised off a partial resolve, so the first `configUpdated` full refresh carries real values instead of a one-beat defaults flash. On Loomi this had shown a whitelisted account as non-premium for ~1s after launch. (#25)
+
 ## [1.1.0] - 2026-06-12
 
 ### Added
@@ -46,6 +52,7 @@ This project adheres to [Semantic Versioning](https://semver.org/).
 
   The resolution is SDK-side only: v1.1.0 emits the signal, consumers still have to observe it. A host app that resolves flags once at ViewModel init sees no change until it collects that flow.
 
+[1.1.1]: https://github.com/98ChimpInc/argus-android-sdk/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/98ChimpInc/argus-android-sdk/compare/v1.0.2...v1.1.0
 [1.0.2]: https://github.com/98ChimpInc/argus-android-sdk/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/98ChimpInc/argus-android-sdk/compare/v1.0.0...v1.0.1
