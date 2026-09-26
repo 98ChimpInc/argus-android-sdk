@@ -137,6 +137,12 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
     // condition name -> /conditions/{id} doc data
     private val conditionDocs = mutableMapOf<String, Map<String, Any?>>()
 
+    // Holds the stream's first consolidated publish until the flags snapshot has
+    // arrived and every flag's env (and tenant, when scoped) listener has
+    // delivered once, so the first emission carries real values, not defaults
+    // (#25). Mutated only under [streamMutex], alongside the doc maps it tracks.
+    private val firstEmission = FirstEmissionGate()
+
     // ── Initialisation ──────────────────────────────────────────────────
 
     override fun initialize() {
@@ -405,6 +411,18 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Timber.w(error, "Argus flags listener error")
+                    // Settle the gate even on error. If the very first flags
+                    // callback fails, awaitingFlagsSnapshot would otherwise stay
+                    // true forever, shouldEmit() would never return true, and the
+                    // stream would never publish — isActive stuck on the HTTP /
+                    // default fallback (or never raised at all when the cold-start
+                    // fetch also failed). Opening the gate falls back gracefully
+                    // instead of stalling (#25); a later successful snapshot still
+                    // publishes the real values as a live update.
+                    appCoroutineScope.launch {
+                        streamMutex.withLock { firstEmission.flagsSnapshotArrived() }
+                        recomputeAndPublish()
+                    }
                     return@addSnapshotListener
                 }
                 if (snapshot == null) return@addSnapshotListener
@@ -422,7 +440,22 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
                             flagDocs.remove(id)
                             envDocs.remove(id)
                             tenantDocs.remove(id)
+                            // Stop the first emission waiting on a flag that
+                            // vanished before its listener ever delivered (#25).
+                            firstEmission.drop(id)
                         }
+                        // Register a first-emission expectation for each flag
+                        // we're about to bind a listener for (idempotent, and a
+                        // no-op once the gate is open). Gate on membership in
+                        // boundEnvFlagIds so a later flags snapshot never re-adds
+                        // a flag whose env has already arrived. Then mark the
+                        // flags snapshot arrived so the gate may open.
+                        currentIds.forEach { id ->
+                            if (id !in boundEnvFlagIds) {
+                                firstEmission.expect(id, tenantScoped = tenantId != null)
+                            }
+                        }
+                        firstEmission.flagsSnapshotArrived()
                     }
                     // Bind env + tenant listeners for the current flag set.
                     snapshot.documents.forEach { doc ->
@@ -453,12 +486,20 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Timber.w(error, "Argus env listener error (%s)", flagId)
+                    // Settle the first-emission slot even on error, so a single
+                    // failing env listener can't hold the stream's first publish
+                    // shut forever (#25).
+                    appCoroutineScope.launch {
+                        streamMutex.withLock { firstEmission.envArrived(flagId) }
+                        recomputeAndPublish()
+                    }
                     return@addSnapshotListener
                 }
                 appCoroutineScope.launch {
                     streamMutex.withLock {
                         val data = snapshot?.data
                         if (data != null) envDocs[flagId] = data else envDocs.remove(flagId)
+                        firstEmission.envArrived(flagId)
                     }
                     recomputeAndPublish()
                 }
@@ -479,12 +520,20 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
             .addSnapshotListener { snapshot, error ->
                 if (error != null) {
                     Timber.w(error, "Argus tenant listener error (%s)", flagId)
+                    // Settle the first-emission slot even on error, so a single
+                    // failing tenant listener can't hold the stream's first
+                    // publish shut forever (#25).
+                    appCoroutineScope.launch {
+                        streamMutex.withLock { firstEmission.tenantArrived(flagId) }
+                        recomputeAndPublish()
+                    }
                     return@addSnapshotListener
                 }
                 appCoroutineScope.launch {
                     streamMutex.withLock {
                         val data = snapshot?.data
                         if (data != null) tenantDocs[flagId] = data else tenantDocs.remove(flagId)
+                        firstEmission.tenantArrived(flagId)
                     }
                     recomputeAndPublish()
                 }
@@ -497,6 +546,13 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
         val inputs: List<ArgusFlagResolver.FlagInput>
         val conditions: Map<String, Map<String, Any?>>
         streamMutex.withLock {
+            // Hold the first stream publish until the flags snapshot has arrived
+            // and every flag's env (and tenant, when scoped) listener has
+            // delivered once. Until then, leave the cache holding the HTTP answer
+            // (or bundled defaults if the cold-start fetch failed) and don't
+            // raise isActive off a partial resolve — otherwise the first
+            // emission is all defaults, then corrects a beat later (#25).
+            if (!firstEmission.shouldEmit()) return
             inputs = flagDocs.map { (flagId, flag) ->
                 ArgusFlagResolver.FlagInput(
                     flag = flag,
@@ -590,6 +646,9 @@ class ArgusFeatureFlagServiceImpl @Inject constructor(
                 envDocs.clear()
                 tenantDocs.clear()
                 conditionDocs.clear()
+                // Re-gate the next initialize() so its first stream publish again
+                // waits for a complete env/tenant load (#25).
+                firstEmission.reset()
             }
             runCatching { firebaseApp?.delete() }
             firebaseApp = null
